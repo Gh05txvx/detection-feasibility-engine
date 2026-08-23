@@ -19,6 +19,7 @@ from typing import Sequence
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from engine.hypothesis import report as rejection_report  # noqa: E402
 from engine.ingestion import parser as ingestion  # noqa: E402  (needs sys.path set first)
 from engine.matching import sigma_matcher  # noqa: E402
 from engine.matching.candidate import MatchCandidate  # noqa: E402
@@ -58,8 +59,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     if rule_index is not None:
         candidates = sigma_matcher.match(fingerprint, rule_index, min_confidence=args.min_confidence)
 
+    # NO MATCH is the hypothesis module's path, not a dead end (BLUEPRINT 5.5).
+    rejection = None
+    if not candidates:
+        rejection = rejection_report.build_report(
+            sample.path,
+            fingerprint,
+            records=sample.records,
+            sigma_index=rule_index,
+            taxonomy_techniques=_taxonomy_techniques(),
+        )
+
+    markdown = rejection_report.render_markdown(rejection) if rejection else None
+    if markdown and args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(markdown, encoding="utf-8")
+
     if args.json:
-        _emit_json(sample, fingerprint, gap, candidates, rule_index)
+        _emit_json(sample, fingerprint, gap, candidates, rule_index, rejection)
         return 0
 
     _report_sample(sample)
@@ -67,7 +85,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     _report_fields(fingerprint)
     _report_ecs_gap(gap)
     _report_candidates(candidates, rule_index, fingerprint, args.top)
+    if markdown:
+        print()
+        print(RULE)
+        print("REJECTION REPORT (hypothesis module)")
+        print(RULE)
+        print()
+        print(markdown)
+        if args.out:
+            print(f"written to {args.out}")
     return 0
+
+
+def _taxonomy_techniques() -> set[str]:
+    """MITRE techniques the internal taxonomy already covers, if the db exists."""
+    try:
+        from engine.storage import db, taxonomy_store
+
+        if not db.DEFAULT_DB_PATH.exists():
+            return set()
+        with db.connection() as conn:
+            return {
+                technique
+                for entry in taxonomy_store.list_entries(conn)
+                for technique in entry.mitre_techniques
+            }
+    except Exception:  # noqa: BLE001 - the taxonomy is an enrichment, never a blocker
+        return set()
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -82,6 +126,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "--min-confidence", type=float, default=0.4, help="drop candidates below this confidence (default 0.4)"
     )
     arg_parser.add_argument("--json", action="store_true", help="emit machine-readable JSON instead of a report")
+    arg_parser.add_argument("--out", default=None, help="write the rejection report markdown to this path")
     arg_parser.add_argument("--rebuild-index", action="store_true", help="rebuild the cached corpus indexes")
     arg_parser.add_argument("--sigma-corpus", default=None, help="path to the Sigma rules directory")
     arg_parser.add_argument("--integrations", default=None, help="path to the elastic/integrations clone")
@@ -194,14 +239,7 @@ def _report_candidates(
 
     if not candidates:
         print()
-        print("  NO MATCH.")
-        if fingerprint.inferred_category is None and fingerprint.inferred_product is None:
-            print("  The log source could not be classified, so no rule's logsource could be confirmed.")
-            print("  Add a signature in engine/profiling/data_classifier.py once this source is known.")
-        else:
-            print("  No rule's logsource and field requirements are both satisfied by this sample.")
-        print("  'No match' is not 'not detectable' (BLUEPRINT §10). The structured rejection")
-        print("  reasoning that belongs here is the Phase 2 hypothesis module, not built yet.")
+        print("  NO MATCH. The hypothesis module's rejection report follows.")
         return
 
     print(f"  {len(candidates)} candidate(s) above the confidence floor; showing {min(top, len(candidates))}")
@@ -220,7 +258,7 @@ def _report_candidates(
     print("  runbook (Phase 5) are not built yet. Every candidate above still needs analyst review.")
 
 
-def _emit_json(sample, fingerprint, gap, candidates, rule_index) -> None:
+def _emit_json(sample, fingerprint, gap, candidates, rule_index, rejection) -> None:
     payload = {
         "sample": {
             "path": sample.path,
@@ -234,6 +272,7 @@ def _emit_json(sample, fingerprint, gap, candidates, rule_index) -> None:
         "ecs_gap": gap.model_dump(mode="json"),
         "sigma_corpus_rules": len(rule_index.rules) if rule_index else 0,
         "candidates": [candidate.model_dump(mode="json") for candidate in candidates],
+        "rejection_report": rejection.model_dump(mode="json") if rejection else None,
     }
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 

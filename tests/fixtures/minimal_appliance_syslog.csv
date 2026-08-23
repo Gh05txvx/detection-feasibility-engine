@@ -1,0 +1,19 @@
+timestamp,host,severity,message
+2026-06-11T03:02:14Z,vpn-gw-01,info,Tunnel established for user budi from 10.20.30.41 using profile CORP-SSL
+2026-06-11T03:04:51Z,vpn-gw-01,warning,Authentication failed for user administrator from 203.0.113.55 reason invalid credentials
+2026-06-11T03:04:55Z,vpn-gw-01,warning,Authentication failed for user admin from 203.0.113.55 reason invalid credentials
+2026-06-11T03:05:02Z,vpn-gw-01,warning,Authentication failed for user root from 203.0.113.55 reason invalid credentials
+2026-06-11T03:09:33Z,vpn-gw-01,info,Tunnel established for user siti from 10.20.30.58 using profile CORP-SSL
+2026-06-11T03:14:07Z,vpn-gw-01,info,Session terminated for user budi duration 712s bytes 1044821
+2026-06-11T03:22:40Z,vpn-gw-01,error,Certificate validation failed for peer 198.51.100.14 chain incomplete
+2026-06-11T03:31:18Z,vpn-gw-01,info,Configuration changed by operator siti section firewall-policy
+2026-06-11T03:44:02Z,vpn-gw-01,info,Tunnel established for user pratama from 192.0.2.140 using profile CORP-SSL
+2026-06-11T03:51:36Z,vpn-gw-01,warning,Rekey timeout for session 84213 peer 192.0.2.140 retrying
+2026-06-11T04:02:09Z,vpn-gw-01,info,Session terminated for user siti duration 3120s bytes 8842310
+2026-06-11T04:18:44Z,vpn-gw-01,error,Disk usage on /var/log reached 91 percent rotation forced
+2026-06-11T04:30:21Z,vpn-gw-01,info,Tunnel established for user wulandari from 10.20.30.72 using profile CORP-SSL
+2026-06-11T04:47:55Z,vpn-gw-01,warning,Authentication failed for user wulandari from 10.20.30.72 reason expired password
+2026-06-11T05:01:12Z,vpn-gw-01,info,Daemon reloaded after configuration change by operator siti
+2026-06-11T05:19:38Z,vpn-gw-01,info,Session terminated for user pratama duration 5502s bytes 22104883
+2026-06-11T05:33:07Z,vpn-gw-01,error,Peer 203.0.113.77 exceeded connection rate limit blocking for 300s
+2026-06-11T05:58:44Z,vpn-gw-01,info,Tunnel established for user budi from 10.20.30.41 using profile CORP-SSL

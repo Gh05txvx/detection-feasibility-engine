@@ -379,12 +379,48 @@ Carried into later phases:
 ### Phase 2 — Hypothesis & rejection module
 **Objective:** handle the NO MATCH path with structured ABLE-based reasoning instead of a dead end.
 
-- [ ] `engine/hypothesis/able.py` — `Hypothesis` model
-- [ ] `engine/hypothesis/validator.py` — the 5 validation steps (reassess data/patterns → confirm baselines → correlate local threat intel → contextual filtering → document/report)
-- [ ] `engine/hypothesis/report.py` — `HypothesisReport` model + markdown rejection-report renderer
-- [ ] Wire into `scripts/cli.py`: no `MatchCandidate` → run the hypothesis module instead
+- [x] `engine/hypothesis/able.py` — `Hypothesis` model
+- [x] `engine/hypothesis/validator.py` — the 5 validation steps (reassess data/patterns → confirm baselines → correlate local threat intel → contextual filtering → document/report)
+- [x] `engine/hypothesis/report.py` — `HypothesisReport` model + markdown rejection-report renderer
+- [x] Wire into `scripts/cli.py`: no `MatchCandidate` → run the hypothesis module instead
 
 **Definition of done:** a deliberately field-poor sample produces a rejection report with reasoning that holds up on review, not just "no match."
+
+**Status: done, pending your review of the reasoning (2026-08-24).** `tests/fixtures/minimal_appliance_syslog.csv`
+is the deliberately field-poor case: a VPN appliance syslog with four columns
+(`timestamp`, `host`, `severity`, `message`). It produces a two-hypothesis rejection
+report naming the exact gaps and what to ask the client for. `scripts/cli.py --out
+report.md` writes it. Whether the reasoning *holds up* is your call, not mine.
+
+Three schema decisions that depart from §3 above, each for a reason:
+
+- **`ValidationCheck.status` is three-state**, not a boolean. A baseline question
+  asked of a behavior that needs no baseline has no answer, and recording it as a
+  pass would overstate what was verified. `passed` remains available as a computed
+  field and is true for anything that is not a failure.
+- **A second verdict, `feasible_no_rule`.** §3 comments `verdict` as always
+  `"rejected"`, but when all four checks pass, "rejected" is simply false: the data
+  *would* support a rule and only the rule is missing. That verdict points at
+  authoring one and encoding it into the internal taxonomy, which is a different
+  action from asking the client for more fields.
+- **`Hypothesis.evidence_requirements` alongside `evidence: str`.** The plan's
+  free-text `evidence` is what a human reads; the reassess check needs the same
+  statement in a form it can actually test.
+
+Design notes:
+
+- The report distinguishes "this field is absent" from "this field exists but is
+  buried in free text". On the appliance fixture the user and outcome are in
+  `message`, so the remediation is a parsing change at ingest, not a request for
+  new log data from the client. Those are very different asks.
+- Hypotheses come from the data category, per `docs/BLUEPRINT.md` 5.2. An
+  unclassified sample gets one placeholder hypothesis whose rejection says the
+  source must be identified first, rather than a fabricated guess.
+- **A precision fix in `ecs_gap` came out of this phase.** The four-field appliance
+  sample resolved to `bbot / asm_intel` (an OSINT scanning tool) purely because
+  `timestamp`, `host`, and `severity` are common to hundreds of packages. Field
+  matching now requires at least two *distinctive* fields, where distinctive means
+  carried by under 5% of data streams. Generic names are no longer evidence.
 
 ### Phase 3 — Rule type classifier + internal taxonomy
 **Objective:** complete the MATCH path with a proper Elastic rule-type recommendation, and extend matching past Sigma's public coverage.

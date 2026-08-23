@@ -69,6 +69,29 @@ _MIN_MATCHED_FIELDS = 3
 _MIN_COVERAGE = 0.25
 # How close to the best score still counts as a tie for the product-name check.
 _TIE_BREAK_MARGIN = 0.9
+# A field carried by more than this share of all data streams says nothing about
+# which integration a sample belongs to. `host`, `timestamp`, and `severity` are
+# in almost every package; matching on them alone once resolved a 4-field
+# appliance syslog to an OSINT scanning tool.
+_DISTINCTIVE_DF_RATIO = 0.05
+_MIN_DISTINCTIVE_FIELDS = 2
+
+# Unambiguous ops fields, for samples no integration covers. Value-based entity
+# recognition cannot label these: a syslog severity is just a short string, and
+# a hostname like `vpn-gw-01` is not an FQDN.
+_NAME_TO_ECS: dict[str, str] = {
+    "severity": "log.level",
+    "level": "log.level",
+    "loglevel": "log.level",
+    "log_level": "log.level",
+    "message": "message",
+    "msg": "message",
+    "host": "host.name",
+    "hostname": "host.name",
+    "computer": "host.name",
+    "devname": "observer.name",
+    "facility": "log.syslog.facility.name",
+}
 
 # Fallback suggestions when no official integration covers the field. Keyed by
 # entity type, refined by what the field name says about direction.
@@ -101,6 +124,13 @@ class IntegrationIndex(BaseModel):
     parse_failures: int = 0
     data_streams: list[DataStreamProfile] = Field(default_factory=list)
     ecs_fields: list[str] = Field(default_factory=list)
+    # How many data streams carry each source field name. A name in hundreds of
+    # them carries no evidence about which integration a sample belongs to.
+    field_document_frequency: dict[str, int] = Field(default_factory=dict)
+
+    def is_distinctive(self, field_name: str) -> bool:
+        limit = max(1, int(len(self.data_streams) * _DISTINCTIVE_DF_RATIO))
+        return self.field_document_frequency.get(field_name, 0) <= limit
 
 
 class IntegrationMatch(BaseModel):
@@ -206,6 +236,11 @@ def build_index(corpus_path: str | Path, *, fingerprint: str | None = None) -> I
                 )
             )
 
+    document_frequency: dict[str, int] = {}
+    for profile in data_streams:
+        for source_field in profile.source_fields:
+            document_frequency[source_field] = document_frequency.get(source_field, 0) + 1
+
     return IntegrationIndex(
         corpus_path=str(corpus),
         fingerprint=fingerprint or _corpus_fingerprint(corpus),
@@ -213,6 +248,7 @@ def build_index(corpus_path: str | Path, *, fingerprint: str | None = None) -> I
         parse_failures=parse_failures,
         data_streams=data_streams,
         ecs_fields=sorted(field for field in ecs_fields if _is_ecs_shaped(field)),
+        field_document_frequency=document_frequency,
     )
 
 
@@ -392,6 +428,12 @@ def find_integration(
         matched = wanted & set(profile.source_fields)
         if len(matched) < _MIN_MATCHED_FIELDS:
             continue
+        # Generic names are not evidence. Without this, a sample of
+        # timestamp/host/severity/message matches whichever package happens to
+        # declare the most common fields.
+        distinctive = [field for field in matched if index.is_distinctive(field)]
+        if len(distinctive) < _MIN_DISTINCTIVE_FIELDS:
+            continue
         scored.append((_overlap_score(matched, wanted, profile), len(matched) / len(wanted), profile, matched))
 
     if not scored:
@@ -562,7 +604,7 @@ def _heuristic_ecs_field(profile: FieldProfile) -> str | None:
 
     entity = profile.entity_type
     if entity is None:
-        return None
+        return _NAME_TO_ECS.get(lowered)
 
     # Direction words only mean source/destination for network endpoints. For a
     # user, "target" is the account acted on, not a network peer, so
@@ -594,7 +636,7 @@ def _heuristic_ecs_field(profile: FieldProfile) -> str | None:
         return "file.path"
     if entity is EntityType.PROCESS_NAME:
         return "process.name"
-    return None
+    return _NAME_TO_ECS.get(lowered)
 
 
 def index_summary(index: IntegrationIndex | None) -> str:
