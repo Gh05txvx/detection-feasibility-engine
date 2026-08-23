@@ -1,0 +1,8 @@
+# Tooling config only. The engine is run from the repo root (see CLAUDE.md
+# "Commands"), not installed as a package, so there is no [project] table.
+
+[tool.pytest.ini_options]
+# Without this, pytest walks into data/ and collects the cloned Sigma corpus's
+# own test suite, which is upstream's problem, not ours.
+testpaths = ["tests"]
+norecursedirs = ["data", ".venv"]

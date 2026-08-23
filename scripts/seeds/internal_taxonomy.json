@@ -1,0 +1,113 @@
+{
+  "source": "Cloudflare WAF attack-pattern taxonomy (15 categories, curated in-house). Two categories are ported here as the Phase 0 structural proof — see docs/IMPLEMENTATION_PLAN.md Phase 0. Add the remaining categories as entries in this file; scripts/seed_taxonomy.py upserts by slug, so re-running never duplicates.",
+  "schema_notes": {
+    "detection_logic": "Sigma-flavoured selection blocks, kept as data rather than a query string so the Phase 3 taxonomy matcher and the Phase 4 backtest can both read it. Modifiers follow Sigma syntax: field|contains, field|re, field|startswith.",
+    "required_fields": "Fields that must exist in the sample for this entry to be feasible at all. Drives the Phase 2 'reassess data & patterns' check.",
+    "suggested_rule_type": "Hint for the Phase 3 classifier, not a substitute for it."
+  },
+  "entries": [
+    {
+      "slug": "cloudflare-waf-sqli",
+      "name": "Cloudflare WAF - SQL injection attempt against public web application",
+      "description": "SQL injection payloads in the request path, query string, or body, seen either as a WAF managed-rule block or as raw SQL syntax in the query string when the WAF is in log-only mode. Category 1 of the in-house Cloudflare WAF taxonomy.",
+      "logsource_category": "webserver",
+      "logsource_product": "cloudflare",
+      "logsource_service": "firewall_events",
+      "data_category": "application_logs",
+      "required_fields": [
+        "Datetime",
+        "ClientIP",
+        "ClientRequestHost",
+        "ClientRequestPath",
+        "ClientRequestQuery",
+        "Action"
+      ],
+      "optional_fields": [
+        "RuleID",
+        "Source",
+        "ClientRequestUserAgent",
+        "ClientCountry",
+        "ClientASN",
+        "EdgeResponseStatus",
+        "OriginResponseStatus",
+        "RayID"
+      ],
+      "detection_logic": {
+        "waf_managed_block": {
+          "Source": ["waf"],
+          "Action": ["block", "challenge", "managed_challenge", "log"],
+          "RuleID": ["100015"]
+        },
+        "sqli_payload": {
+          "ClientRequestQuery|re": "(?i)(union[\\s/*]+select|select[\\s/*]+.*[\\s/*]+from[\\s/*]|\\bor\\b\\s+1\\s*=\\s*1|'\\s*or\\s*'|sleep\\s*\\(|benchmark\\s*\\(|information_schema|xp_cmdshell|waitfor\\s+delay)"
+        },
+        "condition": "waf_managed_block or sqli_payload"
+      },
+      "assumptions": [
+        "ClientRequestQuery is URL-decoded during ingestion. Undecoded, '+' stands in for a space and the \\s in this regex stops matching: on the shipped fixture that costs 1 of 5 SQLi events.",
+        "RuleID scopes the waf_managed_block branch to the SQLi managed rules. Without it the branch fires on every WAF block, SQLi or not. The IDs are ruleset-specific, so confirm them against the client's WAF config during onboarding."
+      ],
+      "mitre_techniques": ["T1190"],
+      "suggested_rule_type": "custom_query",
+      "confidence": 0.8,
+      "false_positives": [
+        "Scheduled DAST/pentest windows against the same hostname",
+        "Search boxes and CMS admin tooling that legitimately pass SQL-like strings in the query",
+        "Security researchers on a bug bounty scope"
+      ],
+      "source_project": "internal - Cloudflare WAF taxonomy",
+      "author": "IMS team",
+      "notes": "Single-event field match, so custom query is enough; escalate to threshold only if the client wants volume-based alerting instead of per-request. Action 'log' is deliberately in scope: a WAF in log-only mode still evidences the attempt, and arguably matters more because nothing stopped it."
+    },
+    {
+      "slug": "cloudflare-waf-credential-stuffing",
+      "name": "Cloudflare WAF - credential stuffing / password spraying against login endpoint",
+      "description": "Repeated failed POSTs to an authentication endpoint from a single client IP or ASN within a short window. Distinguished from a single brute force by breadth: many usernames, few attempts each. Category 7 of the in-house Cloudflare WAF taxonomy.",
+      "logsource_category": "webserver",
+      "logsource_product": "cloudflare",
+      "logsource_service": "firewall_events",
+      "data_category": "application_logs",
+      "required_fields": [
+        "Datetime",
+        "ClientIP",
+        "ClientRequestMethod",
+        "ClientRequestPath",
+        "OriginResponseStatus"
+      ],
+      "optional_fields": [
+        "ClientASN",
+        "ClientCountry",
+        "ClientRequestUserAgent",
+        "EdgeResponseStatus",
+        "Action",
+        "RayID"
+      ],
+      "detection_logic": {
+        "login_attempt": {
+          "ClientRequestMethod": ["POST"],
+          "ClientRequestPath|contains": ["/login", "/signin", "/sign-in", "/auth", "/session", "/wp-login.php", "/api/v1/token"]
+        },
+        "failed": {
+          "OriginResponseStatus": [401, 403]
+        },
+        "aggregation": {
+          "group_by": ["ClientIP"],
+          "count_gte": 20,
+          "window": "5m"
+        },
+        "condition": "login_attempt and failed | count() by ClientIP >= 20 within 5m"
+      },
+      "mitre_techniques": ["T1110.003", "T1110.004"],
+      "suggested_rule_type": "threshold",
+      "confidence": 0.7,
+      "false_positives": [
+        "Mobile apps retrying with a stale token after a password change",
+        "Corporate NAT / proxy egress IPs where many real users share one ClientIP",
+        "Load tests and synthetic monitoring hitting the login endpoint"
+      ],
+      "source_project": "internal - Cloudflare WAF taxonomy",
+      "author": "IMS team",
+      "notes": "Threshold needs a per-client baseline: check the sample's normal failed-login rate per IP before committing to count_gte=20. Behind heavy NAT, group by ClientIP + ClientRequestUserAgent instead."
+    }
+  ]
+}

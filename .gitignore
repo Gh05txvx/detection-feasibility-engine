@@ -1,0 +1,24 @@
+# Reference corpora, SQLite db, uploaded samples — all local, never committed.
+data/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Generated output
+out/
+*.log
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# Local tooling that happens to live in this folder, not part of the project
+rtk.exe
+.claude/settings.local.json

@@ -1,0 +1,25 @@
+# Detection Feasibility & Rule Recommendation Engine
+# Pinned to minimum-known-good versions. Everything here runs locally;
+# nothing in this list phones home at runtime.
+#
+# Do not add a dependency that is not in docs/BLUEPRINT.md Section 6 /
+# CLAUDE.md "Tech stack" without flagging it first.
+
+# --- web layer (Phase 6, installed early so the venv is built once) ---
+fastapi>=0.110
+uvicorn[standard]>=0.29
+jinja2>=3.1
+
+# --- data schemas ---
+pydantic>=2.6
+
+# --- profiling ---
+pandas>=2.2
+
+# --- detection matching / rule conversion ---
+pysigma>=0.11
+pysigma-backend-elasticsearch>=1.1
+sigma-cli>=1.0
+
+# --- tests ---
+pytest>=8.0
