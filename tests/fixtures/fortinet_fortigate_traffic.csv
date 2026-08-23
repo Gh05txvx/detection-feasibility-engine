@@ -1,0 +1,21 @@
+date,time,devname,devid,logid,type,subtype,level,vd,srcip,srcport,srcintf,dstip,dstport,dstintf,sessionid,proto,action,policyid,service,srccountry,dstcountry,duration,sentbyte,rcvdbyte,sentpkt,rcvdpkt,appcat
+2026-04-02,08:14:21,FGT-HQ-01,FG100F3G20001234,0000000013,traffic,forward,notice,root,10.20.30.41,51422,port3,142.250.190.14,443,port1,842113,6,accept,12,HTTPS,Reserved,United States,63,8421,32118,42,58,Web.Client
+2026-04-02,08:14:47,FGT-HQ-01,FG100F3G20001234,0000000013,traffic,forward,notice,root,10.20.30.58,49188,port3,151.101.1.140,443,port1,842114,6,accept,12,HTTPS,Reserved,United States,120,15230,88214,96,131,Web.Client
+2026-04-02,08:15:02,FGT-HQ-01,FG100F3G20001234,0000000013,traffic,forward,notice,root,10.20.30.41,51423,port3,8.8.8.8,53,port1,842115,17,accept,14,DNS,Reserved,United States,2,88,164,1,1,Network.Service
+2026-04-02,08:15:33,FGT-HQ-01,FG100F3G20001234,0000000014,traffic,forward,warning,root,203.0.113.77,44120,port1,10.20.30.10,3389,port3,842116,6,deny,3,RDP,Netherlands,Reserved,0,60,0,1,0,Remote.Access
+2026-04-02,08:15:34,FGT-HQ-01,FG100F3G20001234,0000000014,traffic,forward,warning,root,203.0.113.77,44121,port1,10.20.30.11,3389,port3,842117,6,deny,3,RDP,Netherlands,Reserved,0,60,0,1,0,Remote.Access
+2026-04-02,08:15:35,FGT-HQ-01,FG100F3G20001234,0000000014,traffic,forward,warning,root,203.0.113.77,44122,port1,10.20.30.12,3389,port3,842118,6,deny,3,RDP,Netherlands,Reserved,0,60,0,1,0,Remote.Access
+2026-04-02,08:15:36,FGT-HQ-01,FG100F3G20001234,0000000014,traffic,forward,warning,root,203.0.113.77,44123,port1,10.20.30.13,22,port3,842119,6,deny,3,SSH,Netherlands,Reserved,0,60,0,1,0,Remote.Access
+2026-04-02,08:15:37,FGT-HQ-01,FG100F3G20001234,0000000014,traffic,forward,warning,root,203.0.113.77,44124,port1,10.20.30.14,445,port3,842120,6,deny,3,SMB,Netherlands,Reserved,0,60,0,1,0,File.Sharing
+2026-04-02,08:15:38,FGT-HQ-01,FG100F3G20001234,0000000014,traffic,forward,warning,root,203.0.113.77,44125,port1,10.20.30.15,1433,port3,842121,6,deny,3,MS-SQL,Netherlands,Reserved,0,60,0,1,0,Database
+2026-04-02,08:16:10,FGT-HQ-01,FG100F3G20001234,0000000013,traffic,forward,notice,root,10.20.30.72,55310,port3,52.96.104.18,443,port1,842122,6,accept,12,HTTPS,Reserved,United States,301,44210,210338,188,244,Collaboration
+2026-04-02,08:17:02,FGT-HQ-01,FG100F3G20001234,0000000013,traffic,forward,notice,root,10.20.30.41,51430,port3,104.18.32.7,443,port1,842123,6,accept,12,HTTPS,Reserved,United States,15,3120,11884,18,22,Web.Client
+2026-04-02,08:18:44,FGT-HQ-01,FG100F3G20001234,0000000013,traffic,forward,notice,root,10.20.30.99,60122,port3,185.199.108.153,443,port1,842124,6,accept,12,HTTPS,Reserved,United States,44,9922,45120,51,63,Web.Client
+2026-04-02,08:19:15,FGT-HQ-01,FG100F3G20001234,0000000014,traffic,forward,warning,root,198.51.100.14,39900,port1,10.20.30.10,23,port3,842125,6,deny,3,TELNET,China,Reserved,0,60,0,1,0,Remote.Access
+2026-04-02,08:19:16,FGT-HQ-01,FG100F3G20001234,0000000014,traffic,forward,warning,root,198.51.100.14,39901,port1,10.20.30.10,21,port3,842126,6,deny,3,FTP,China,Reserved,0,60,0,1,0,File.Sharing
+2026-04-02,08:20:01,FGT-HQ-01,FG100F3G20001234,0000000013,traffic,forward,notice,root,10.20.30.58,49250,port3,20.190.159.4,443,port1,842127,6,accept,12,HTTPS,Reserved,United States,88,12044,60112,72,94,Authentication
+2026-04-02,08:21:30,FGT-HQ-01,FG100F3G20001234,0000000013,traffic,forward,notice,root,10.20.30.120,53002,port3,10.20.40.5,445,port2,842128,6,accept,20,SMB,Reserved,Reserved,210,88420,120336,301,388,File.Sharing
+2026-04-02,08:22:18,FGT-HQ-01,FG100F3G20001234,0000000013,traffic,forward,notice,root,10.20.30.41,51488,port3,142.250.190.14,443,port1,842129,6,accept,12,HTTPS,Reserved,United States,30,5120,19884,28,36,Web.Client
+2026-04-02,08:23:05,FGT-HQ-01,FG100F3G20001234,0000000014,traffic,forward,warning,root,10.20.30.201,49999,port3,45.133.1.88,4444,port1,842130,6,deny,7,unknown,Reserved,Russian Federation,0,120,0,2,0,Unknown
+2026-04-02,08:23:51,FGT-HQ-01,FG100F3G20001234,0000000013,traffic,forward,notice,root,10.20.30.72,55402,port3,52.96.104.18,443,port1,842131,6,accept,12,HTTPS,Reserved,United States,150,22110,98422,110,142,Collaboration
+2026-04-02,08:25:12,FGT-HQ-01,FG100F3G20001234,0000000013,traffic,forward,notice,root,10.20.30.15,51001,port3,10.20.40.9,1433,port2,842132,6,accept,20,MS-SQL,Reserved,Reserved,412,142880,388210,502,644,Database

@@ -323,15 +323,58 @@ landed, and the two decisions that deviate from the text above:
 ### Phase 1 — MVP matching
 **Objective:** prove ingestion → profiling → Sigma-matching works end to end via CLI.
 
-- [ ] `engine/ingestion/parser.py` — CSV/JSON auto-detect + parse → `LogRecord` list
-- [ ] `engine/profiling/field_profiler.py`, `entity_recognition.py` — per-field stats + entity detection → `FieldProfile` list
-- [ ] `engine/profiling/ecs_gap.py` — ECS compliance check per field, cross-reference `data/elastic-integrations/` before generating a custom mapping suggestion
-- [ ] `engine/profiling/data_classifier.py` — `DataCategory` classification
-- [ ] `engine/matching/sigma_matcher.py` — match `LogFingerprint` against local Sigma corpus `logsource` definitions
-- [ ] `scripts/cli.py` — `python scripts/cli.py path/to/sample.csv` prints fingerprint + match candidates
+- [x] `engine/ingestion/parser.py` — CSV/JSON auto-detect + parse → `LogRecord` list
+- [x] `engine/profiling/field_profiler.py`, `entity_recognition.py` — per-field stats + entity detection → `FieldProfile` list
+- [x] `engine/profiling/ecs_gap.py` — ECS compliance check per field, cross-reference `data/elastic-integrations/` before generating a custom mapping suggestion
+- [x] `engine/profiling/data_classifier.py` — `DataCategory` classification
+- [x] `engine/matching/sigma_matcher.py` — match `LogFingerprint` against local Sigma corpus `logsource` definitions
+- [x] `scripts/cli.py` — `python scripts/cli.py path/to/sample.csv` prints fingerprint + match candidates
 
 **Definition of done:** tested against 3-5 old project log samples; matching results hold up on manual review.
 **Not in scope yet:** internal taxonomy matching, rule type classifier, hypothesis module, prediction, web UI.
+
+**Status: code complete, Definition of Done NOT met (2026-08-24).** Every task above
+is built and the pipeline runs end to end, but the DoD asks for 3-5 *real* project
+samples reviewed by hand, and none were available. It was exercised against three
+synthetic fixtures instead (Cloudflare firewall events, FortiGate traffic, Windows
+Security logons). **Phase 1 stays open until real samples are run through it.**
+
+What the fixtures showed:
+
+| Sample | Fingerprint | Integration resolved | Candidates |
+|---|---|---|---|
+| Cloudflare firewall events | webserver / cloudflare / firewall_events | `cloudflare_logpush / firewall_event`, 100% | 12 (incl. the Phase 0 rule) |
+| FortiGate traffic | firewall / fortinet_fortigate | `fortinet_fortigate / log`, 68% | 1 |
+| Windows Security logons | windows / security | none (grok-based package) | 146 |
+
+Design decisions worth knowing before Phase 2:
+
+- **Corpus indexes are cached.** Parsing 3144 Sigma rules with pySigma takes ~23 s
+  and the integrations clone ~45 s, far too slow per run. Both are reduced to
+  `data/sigma-index.json` and `data/integration-index.json`, rebuilt only when the
+  clone changes (`--rebuild-index` forces it).
+- **Integration lookup ranks by F2, not by field-overlap count.** Overlap alone
+  rewards verbosity: FortiProxy declares 424 source fields to FortiGate's 272 and
+  won a FortiGate sample on vocabulary size alone. Precision fixes it; the product
+  name only breaks near-ties.
+- **Sigma fields resolve through ECS.** Rules are written against a taxonomy
+  (`cs-method`), samples carry vendor names (`ClientRequestMethod`); the bridge is
+  the ECS mapping from the official integration, so the Phase 0 hand trace is now
+  automatic.
+- **An unconfirmable logsource element is treated as a mismatch.** A rule pinning
+  `product: windows` is dropped for a sample whose product is unknown, rather than
+  guessed into the candidate list.
+- `pyyaml` added to `requirements.txt`. Not a new install (pysigma already pulls it)
+  but now imported directly, so it is declared.
+
+Carried into later phases:
+
+- The internal taxonomy is seeded but **not yet consulted** — `taxonomy_matcher.py`
+  is Phase 3. Until then a sample with no Sigma coverage reports NO MATCH even when
+  a taxonomy entry would have matched it.
+- Sigma rules whose logsource is generic (`category: firewall`) are thin on the
+  ground: the FortiGate sample produced one candidate from 3144 rules. That is the
+  coverage gap `docs/BLUEPRINT.md` §10 predicts, and the argument for Phase 3.
 
 ### Phase 2 — Hypothesis & rejection module
 **Objective:** handle the NO MATCH path with structured ABLE-based reasoning instead of a dead end.

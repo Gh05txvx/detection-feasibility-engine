@@ -16,6 +16,11 @@ pydantic>=2.6
 # --- profiling ---
 pandas>=2.2
 
+# --- reference corpora parsing ---
+# elastic/integrations ingest pipelines and Sigma rules are YAML. Already
+# present as a pysigma dependency; declared explicitly because we import it.
+pyyaml>=6.0
+
 # --- detection matching / rule conversion ---
 pysigma>=0.11
 pysigma-backend-elasticsearch>=1.1

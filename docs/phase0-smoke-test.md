@@ -75,15 +75,21 @@ So: **official integration available, no custom mapping needed.** Verified again
 | `Action` | `event.action` |
 | everything else | `cloudflare_logpush.firewall_event.*` (vendor namespace) |
 
-Two residual gaps the integration does **not** close:
+What the integration does **not** close:
 
-1. `ClientRequestUserAgent` lands only at
-   `cloudflare_logpush.firewall_event.client.request.user.agent`. There is no
-   `user_agent` processor in this data stream, so ECS `user_agent.original` stays
-   empty. Any rule keyed on user agent needs that added.
-2. `http.response.status_code` is copied from the **edge** status. `OriginResponseStatus`
+1. `http.response.status_code` is copied from the **edge** status. `OriginResponseStatus`
    keeps its vendor-namespaced field. For this sample the two agree, but a rule that
    means "the origin rejected it" must read the vendor field, not the ECS one.
+2. Four more fields stay vendor-namespaced with no ECS target: `Source`, `Kind`,
+   `EdgeColoCode`, `ClientRequestProtocol`.
+
+> **Correction (Phase 1).** This section first claimed a third gap: that the data
+> stream has no `user_agent` processor, leaving ECS `user_agent.original` empty.
+> That was wrong. The pipeline does run one (`default.yml` line 324); the original
+> grep that produced the claim was truncated by `head -25` and never reached it.
+> `ClientRequestUserAgent` is mapped. The automated ECS gap analysis built in
+> Phase 1 disagreed with the hand-written table here, which is how the error
+> surfaced.
 
 ## 4. The Sigma match
 
@@ -195,8 +201,9 @@ is the test that matters.
    `cloudflare_logpush` are both "Cloudflare"; only one has a `firewall_event` data
    stream matching this shape. `ecs_gap.py` has to match on data stream fields, and a
    vendor-name lookup would have picked the wrong package here.
-5. **Record what an official integration leaves unmapped.** Here: no ECS `user_agent.*`,
-   and `http.response.status_code` carries the edge status, not the origin status.
+5. **Record what an official integration leaves unmapped.** Here: `http.response.status_code`
+   carries the edge status rather than the origin status, and `Source`, `Kind`,
+   `EdgeColoCode`, and `ClientRequestProtocol` get no ECS target at all.
 
 ## Reproduce
 
