@@ -110,6 +110,119 @@
       "source_project": "proposed, not yet in the in-house taxonomy",
       "author": "IMS team",
       "notes": "Threshold needs a per-client baseline: check the sample's normal failed-login rate per IP before committing to count_gte=20. Behind heavy NAT, group by ClientIP + ClientRequestUserAgent instead."
+    },
+    {
+      "slug": "cloudflare-waf-path-traversal",
+      "name": "Cloudflare WAF - path traversal attempt",
+      "description": "Directory traversal in the request path or query string, across the encoding variants used to evade a single decoding layer: literal ../, single and double URL encoding, Windows backslash, and overlong UTF-8. CWE-22. Maps to the in-house category 'PathTraversal'. Ported from the team's own reviewed Cloudflare custom-rule pattern.",
+      "logsource_category": "webserver",
+      "logsource_product": "cloudflare",
+      "logsource_service": "firewall_events",
+      "data_category": "application_logs",
+      "required_fields": [
+        "Datetime",
+        "ClientIP",
+        "ClientRequestHost",
+        "ClientRequestPath",
+        "ClientRequestQuery"
+      ],
+      "optional_fields": ["Action", "Source", "RuleID", "ClientRequestUserAgent", "EdgeResponseStatus"],
+      "detection_logic": {
+        "traversal_in_path": {
+          "ClientRequestPath|re": "(?i)(\\.\\./|\\.\\.%2[fF]|%2e%2e%2f|%252e%252e%252f|\\.\\.\\\\|%c0%ae%c0%ae)"
+        },
+        "traversal_in_query": {
+          "ClientRequestQuery|re": "(?i)(\\.\\./|\\.\\.%2[fF]|%2e%2e%2f|%252e%252e%252f|\\.\\.\\\\|%c0%ae%c0%ae)"
+        },
+        "condition": "traversal_in_path or traversal_in_query"
+      },
+      "assumptions": [
+        "The source rule matches http.request.uri, path and query together. Logpush delivers those as two fields, so the same pattern is applied to each and the results OR'd. Matching the path alone would miss payloads in the query string, which the source document calls mandatory to cover.",
+        "(?i) was moved from mid-pattern to the front. RE2 accepts an inline flag anywhere; Python rejects one that is not at the start, so the pattern would not compile here as written. Moving it also applies case-insensitivity to the whole expression, which is exactly what the source document recommends as its first improvement: %2E%2E%2F was not covered before.",
+        "If ported back to a Cloudflare custom rule: the 'matches' operator is Enterprise-plan only, and RE2 supports no backreferences or lookaround. This pattern uses neither."
+      ],
+      "mitre_techniques": ["T1190"],
+      "suggested_rule_type": "custom_query",
+      "confidence": 0.85,
+      "false_positives": [
+        "Internal vulnerability scanners and scheduled DAST windows against the same hostname",
+        "Application endpoints that legitimately carry encoded path fragments in a parameter"
+      ],
+      "source_project": "internal - Cloudflare WAF taxonomy, category 'PathTraversal'",
+      "author": "IMS team",
+      "notes": "Known gaps recorded by the pattern's author and deliberately not silently fixed here: URL-encoded backslash (%5c / %5C) is not covered, and only one overlong UTF-8 variant is, so %e0%80%ae and mixed forms like %c0%2e slip past. Overlong UTF-8 in a URL is close to a certain indicator on its own; a legitimate client never sends it."
+    },
+    {
+      "slug": "cloudflare-waf-sensitive-path-access",
+      "name": "Cloudflare WAF - sensitive path and config file access",
+      "description": "Requests for configuration, VCS and credential artefacts that should never be reachable over HTTP: .env, .git/, .aws/credentials, id_rsa, web.config and similar. CWE-538 and CWE-548. Maps to the in-house category 'SensitivePathAccess'. Ported from the team's own reviewed Cloudflare custom-rule pattern.",
+      "logsource_category": "webserver",
+      "logsource_product": "cloudflare",
+      "logsource_service": "firewall_events",
+      "data_category": "application_logs",
+      "required_fields": ["Datetime", "ClientIP", "ClientRequestHost", "ClientRequestPath"],
+      "optional_fields": ["Action", "ClientRequestUserAgent", "EdgeResponseStatus", "ClientASN"],
+      "detection_logic": {
+        "sensitive_path": {
+          "ClientRequestPath|re": "(?i)(\\.env$|\\.env\\?|\\.git/|\\.svn/|\\.idea/|wp-admin|wp-login|\\.aws/credentials|id_rsa|\\.ssh/|config\\.php|web\\.config|\\.htpasswd|\\.npmrc|\\.dockercfg|docker-compose\\.ya?ml|\\.DS_Store|composer\\.lock|package-lock\\.json)"
+        },
+        "condition": "sensitive_path"
+      },
+      "assumptions": [
+        "Path only, not the query string. That is what the source rule does, because these are filenames rather than payloads.",
+        "wp-admin and wp-login stay in scope even where the client runs no WordPress. That is the point: on a non-WordPress site such a request is a strong signal of a generic scanner, since mass scanning does not know the target's stack."
+      ],
+      "mitre_techniques": ["T1595.003"],
+      "suggested_rule_type": "custom_query",
+      "confidence": 0.85,
+      "false_positives": [
+        "Internal monitoring or deployment tooling that requests build artefacts by path",
+        "Developer tools pointed at a production host by mistake"
+      ],
+      "source_project": "internal - Cloudflare WAF taxonomy, category 'SensitivePathAccess'",
+      "author": "IMS team",
+      "notes": "Recorded by the pattern's author as worth adding but not yet added: .htaccess (only .htpasswd is covered), common backup artefacts (.bak, .old, .sql, backup.zip), and framework debug endpoints (/actuator, /telescope, /_profiler, /server-status, /phpinfo.php, /adminer.php). Also noted: .git/HEAD is more specific and lower false-positive than \\.git/ on its own. Volume here is usually recon; pairing with a rate-limit rule catches the campaign better than the pattern alone."
+    },
+    {
+      "slug": "cloudflare-waf-rce-command-injection",
+      "name": "Cloudflare WAF - RCE and command injection attempt",
+      "description": "Command chaining, shell substitution, PHP execution sinks, expression injection including the Log4Shell shape, CRLF command injection and encoded PowerShell. CWE-78 and CWE-95. Maps to the in-house category 'RCE_CommandInjection'. Ported from the team's own reviewed Cloudflare custom-rule pattern, including the two corrections its author made before implementation.",
+      "logsource_category": "webserver",
+      "logsource_product": "cloudflare",
+      "logsource_service": "firewall_events",
+      "data_category": "application_logs",
+      "required_fields": [
+        "Datetime",
+        "ClientIP",
+        "ClientRequestHost",
+        "ClientRequestPath",
+        "ClientRequestQuery"
+      ],
+      "optional_fields": ["Action", "Source", "RuleID", "ClientRequestUserAgent", "OriginResponseStatus"],
+      "detection_logic": {
+        "rce_in_path": {
+          "ClientRequestPath|re": "(?i)(;\\s*(cat|wget|curl|nc|bash|sh|chmod|python)\\s|\\$\\{[^}]{1,100}\\}|`[^`]*`|\\bsystem\\(|\\bexec\\(|\\bpassthru\\(|\\bshell_exec\\(|\\|\\|\\s*(id|whoami|uname)|%0a(id|whoami|cat)|powershell\\s+-enc)"
+        },
+        "rce_in_query": {
+          "ClientRequestQuery|re": "(?i)(;\\s*(cat|wget|curl|nc|bash|sh|chmod|python)\\s|\\$\\{[^}]{1,100}\\}|`[^`]*`|\\bsystem\\(|\\bexec\\(|\\bpassthru\\(|\\bshell_exec\\(|\\|\\|\\s*(id|whoami|uname)|%0a(id|whoami|cat)|powershell\\s+-enc)"
+        },
+        "condition": "rce_in_path or rce_in_query"
+      },
+      "assumptions": [
+        "The source rule matches http.request.uri, path and query together; the same pattern is applied to each Logpush field and OR'd. The document calls covering the query string mandatory here, because that is where the payload usually sits.",
+        "Two corrections the pattern's author had already made are carried over: passwthru is spelled passthru, which is the real PHP function and without which that branch could never match anything; and the greedy ${.*} is bounded to ${[^}]{1,100}}, which stops it swallowing an unrelated span of a large JSON body.",
+        "If ported back to a Cloudflare custom rule: 'matches' is Enterprise-plan only, and RE2 has no backreferences or lookaround. This pattern uses neither."
+      ],
+      "mitre_techniques": ["T1190", "T1059"],
+      "suggested_rule_type": "custom_query",
+      "confidence": 0.75,
+      "false_positives": [
+        "API endpoints that legitimately accept ${...} template syntax or backticks in a parameter; whitelist those endpoints explicitly rather than weakening the pattern",
+        "Security testing windows and internal tooling that sends shell-like strings"
+      ],
+      "source_project": "internal - Cloudflare WAF taxonomy, category 'RCE_CommandInjection'",
+      "author": "IMS team",
+      "notes": "Confidence is lower than the other two ported patterns because ${...} can still over-match on request bodies even when bounded. Sinks the author recorded as not yet covered: eval(, assert(, base64_decode( (common webshell obfuscation), proc_open(, popen(, Runtime.exec (Java), os.system and subprocess. (Python - the pattern detects the word python as a command but not Python code injection). No explicit reverse-shell indicators either (/bin/bash -i, nc -e, bash -c, 0<&196)."
     }
   ]
 }

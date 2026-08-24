@@ -113,7 +113,35 @@ engine handled badly.
 
 | # | Task | Owner | Size |
 |---|---|---|---|
-| 3.1 | **Port the remaining Cloudflare WAF categories** into `scripts/seeds/internal_taxonomy.json`. **Unblocked by 1.3:** eight named categories are still unported, and three of them — PathTraversal, SensitivePathAccess, RCE_CommandInjection — already have reviewed regex, CWE mapping and known weaknesses written up in the team's own pattern document, so they can be ported almost verbatim. The other five (KnownCVE_Signature, SSRF, NoSQLi, OpenRedirect, XSS) have names and observed payloads but no documented logic yet. | both | M |
+| 3.1 | **Port the remaining Cloudflare WAF categories.** **Three done 2026-08-24** — PathTraversal, SensitivePathAccess, RCE_CommandInjection, from the team's own reviewed pattern document; details below. **Five still to write:** KnownCVE_Signature, SSRF, NoSQLi, OpenRedirect, XSS have category names and observed payloads but no documented detection logic yet, so each needs an analyst to author it. Six further categories from the blueprint's count of fifteen are still unnamed. | both | M |
+
+### 3.1 — the three ported so far
+
+The taxonomy now holds five entries. Against the Cloudflare fixture each finds exactly
+the attacks that are in it and nothing else: path traversal on line 13, the three
+scanner requests on lines 34-36, SQLi on lines 6-10, and RCE nothing, because that
+sample contains no RCE payload.
+
+Two adaptations were needed and are recorded as assumptions on the entries:
+
+- **`(?i)` had to move to the front of the path-traversal pattern.** RE2 accepts an
+  inline flag mid-expression; Python rejects one that is not at the start, so the
+  pattern would not have compiled at all. Moving it also makes the whole expression
+  case-insensitive, which is what the source document lists as its own first
+  improvement — `%2E%2E%2F` was not covered before and is now.
+- **`http.request.uri` is one field in Cloudflare and two in Logpush.** The patterns
+  are applied to `ClientRequestPath` and `ClientRequestQuery` and OR'd, since matching
+  the path alone would miss payloads in the query string.
+
+The known gaps their author recorded were **not** silently fixed: encoded backslash and
+the other overlong UTF-8 forms for traversal; `.htaccess`, backup artefacts and
+framework debug endpoints for sensitive paths; `eval(`, `assert(`, `base64_decode(` and
+reverse-shell indicators for RCE. They are written into each entry's `notes` so the
+next analyst decides, rather than finding an undocumented divergence from the source.
+
+Two corrections its author had already made **are** carried over: `passwthru` spelled
+`passthru`, which without the fix could never match the real PHP function, and the
+greedy `${.*}` bounded so it cannot swallow an unrelated span of a large body.
 | 3.2 | **Add a CyberArk log source signature.** Deliberately skipped: I could not verify the field names, and a guessed signature that looks authoritative is worse than none. Needs one real sample. | both | S |
 | 3.3 | **Grow the internal taxonomy for sources Sigma does not reach.** The FortiGate fixture produced 1 candidate from 3144 Sigma rules; the appliance syslog produced none. That gap is what the taxonomy exists to close, and it only closes one project at a time. | both | L |
 | 3.4 | **Widen the backtest's supported Sigma constructs.** Rules using anything the evaluator does not implement are reported as not backtested, with the reason — never miscounted. Worth extending once real samples show which constructs actually come up. | eng | M |

