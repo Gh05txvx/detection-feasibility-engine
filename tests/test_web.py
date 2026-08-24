@@ -381,6 +381,35 @@ def test_finished_job_records_every_stage_it_passed(client):
     assert job.stage == pipeline.STAGES[-1]
 
 
+def test_a_run_orphaned_by_a_restart_is_failed_when_the_next_server_boots(workspace):
+    with db.connection() as conn:
+        stuck = job_store.create(conn, "interrupted.csv")
+        job_store.mark_running(conn, stuck.job_id)
+        finished = job_store.create(conn, "finished.csv")
+        job_store.mark_done(conn, finished.job_id, result_type=job_store.ResultType.RUNBOOK,
+                            result_path="somewhere.json")
+
+    serve.create_app()  # a new server boots
+
+    with db.connection() as conn:
+        assert job_store.get(conn, stuck.job_id).status is JobStatus.FAILED
+        assert job_store.get(conn, finished.job_id).status is JobStatus.DONE
+
+
+def test_an_orphaned_run_stops_polling_and_says_what_to_do(workspace):
+    """Left alone the status page polls a job nothing will ever finish."""
+    with db.connection() as conn:
+        stuck = job_store.create(conn, "interrupted.csv")
+        job_store.mark_running(conn, stuck.job_id)
+
+    fresh = TestClient(serve.create_app())
+    response = fresh.get(f"/jobs/{stuck.job_id}")
+
+    assert response.status_code == 200
+    assert "hx-trigger" not in response.text
+    assert "Upload the sample again" in response.text
+
+
 def test_empty_upload_fails_the_job_with_a_reason(client, tmp_path):
     empty = tmp_path / "empty.csv"
     empty.write_bytes(b"")

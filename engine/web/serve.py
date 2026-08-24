@@ -35,11 +35,20 @@ def create_app():
     from fastapi.staticfiles import StaticFiles
     from starlette.exceptions import HTTPException as StarletteHTTPException
 
+    from engine.storage import db, job_store
     from engine.web import staleness
     from engine.web.routes import STATIC_DIR, router
 
     # Whatever the code looks like right now is what this process is running.
     staleness.watch.mark_started()
+
+    # Runs belonging to a server that is gone cannot finish. Left alone they sit
+    # at "running" and the status page polls them forever.
+    db.init_db()
+    with db.connection() as conn:
+        orphaned = job_store.fail_orphaned(conn)
+    if orphaned:
+        print(f"Marked {len(orphaned)} unfinished run(s) as failed: their server is gone.")
 
     app = FastAPI(
         title="Detection Feasibility Engine",

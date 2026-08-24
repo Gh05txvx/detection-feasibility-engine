@@ -108,6 +108,37 @@ def mark_failed(conn: sqlite3.Connection, job_id: str, error: str) -> None:
         )
 
 
+ORPHAN_REASON = (
+    "The server stopped while this run was in progress. Upload the sample again to re-run it."
+)
+
+
+def fail_orphaned(conn: sqlite3.Connection, reason: str = ORPHAN_REASON) -> list[str]:
+    """Fail runs left mid-flight by a server that is no longer here.
+
+    A process that dies between ``mark_running`` and ``mark_done`` leaves its row
+    at ``running`` permanently, and the status page polls it forever, because the
+    only thing that could ever have moved it was the process that died.
+
+    Assumes one server at a time, which the port check in ``serve.main`` enforces
+    for the default port. A second instance deliberately started on another port
+    would fail the first one's in-flight runs.
+    """
+    unfinished = (JobStatus.QUEUED.value, JobStatus.RUNNING.value)
+    rows = conn.execute(
+        "SELECT job_id FROM job_runs WHERE status IN (?, ?)", unfinished
+    ).fetchall()
+    if not rows:
+        return []
+
+    with transaction(conn):
+        conn.execute(
+            "UPDATE job_runs SET status = ?, finished_at = ?, error = ? WHERE status IN (?, ?)",
+            (JobStatus.FAILED.value, _utcnow(), reason, *unfinished),
+        )
+    return [row["job_id"] for row in rows]
+
+
 def get(conn: sqlite3.Connection, job_id: str) -> JobRecord | None:
     row = conn.execute(f"SELECT {_COLUMNS} FROM job_runs WHERE job_id = ?", (job_id,)).fetchone()
     return JobRecord(**dict(row)) if row else None

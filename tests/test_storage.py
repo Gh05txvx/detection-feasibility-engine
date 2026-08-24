@@ -6,7 +6,8 @@ import sqlite3
 
 import pytest
 
-from engine.storage import db, taxonomy_store
+from engine.storage import db, job_store, taxonomy_store
+from engine.storage.job_store import JobStatus
 from engine.storage.taxonomy_store import TaxonomyEntry, load_entries_from_json
 from scripts.seed_taxonomy import DEFAULT_SEED_FILE
 
@@ -118,6 +119,30 @@ def test_assumptions_roundtrip(conn):
     taxonomy_store.upsert(conn, _entry(assumptions=["query string is URL-decoded at ingestion"]))
     stored = taxonomy_store.get(conn, "test-entry")
     assert stored.assumptions == ["query string is URL-decoded at ingestion"]
+
+
+def test_orphaned_runs_are_failed_and_finished_ones_left_alone(conn):
+    """Nothing else can ever move these rows: the process that could is dead."""
+    queued = job_store.create(conn, "queued.csv")
+    running = job_store.create(conn, "running.csv")
+    job_store.mark_running(conn, running.job_id)
+    finished = job_store.create(conn, "finished.csv")
+    job_store.mark_done(conn, finished.job_id, result_type=job_store.ResultType.RUNBOOK,
+                        result_path="somewhere.json")
+
+    orphaned = job_store.fail_orphaned(conn)
+
+    assert set(orphaned) == {queued.job_id, running.job_id}
+    for job_id in orphaned:
+        record = job_store.get(conn, job_id)
+        assert record.status is JobStatus.FAILED
+        assert record.finished_at
+        assert "server stopped" in record.error
+    assert job_store.get(conn, finished.job_id).status is JobStatus.DONE
+
+
+def test_failing_orphans_is_a_no_op_when_there_are_none(conn):
+    assert job_store.fail_orphaned(conn) == []
 
 
 def test_job_runs_rejects_unknown_status(conn):
