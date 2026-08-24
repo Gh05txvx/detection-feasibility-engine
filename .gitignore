@@ -1,6 +1,18 @@
 # Reference corpora, SQLite db, uploaded samples — all local, never committed.
 data/
 
+# Client log samples must never reach git. Everything under tests/fixtures is
+# excluded by default and the synthetic fixtures are re-included by name, so a
+# real sample dropped in here is ignored without anyone having to remember to
+# ignore it. The failure mode is a missing test file, never a leak.
+# Adding a new *synthetic* fixture: append it below and `git add -f` it.
+tests/fixtures/*
+!tests/fixtures/cloudflare_waf_firewall_events.csv
+!tests/fixtures/fortinet_fortigate_traffic.csv
+!tests/fixtures/iis_w3c_access.csv
+!tests/fixtures/minimal_appliance_syslog.csv
+!tests/fixtures/windows_security_logons.csv
+
 # Python
 .venv/
 venv/

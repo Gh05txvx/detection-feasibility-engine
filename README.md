@@ -274,5 +274,8 @@ No npm, no build step.
 
 ---
 
-*Internal tool. Log samples are client data — keep them out of this repository;
-`data/` is gitignored for that reason.*
+*Internal tool. Log samples are client data and must not reach this repository.
+`data/` is gitignored, and so is everything under `tests/fixtures/` except the
+five synthetic fixtures, which are re-included by name — drop a real sample in
+there and git will ignore it by default rather than because someone remembered
+to. A private repo is not the same as a safe one.*
