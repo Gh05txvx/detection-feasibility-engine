@@ -332,6 +332,15 @@ def _render(
         lines.append(f"| `{rule_field}` | `{target}` | `{sample_field}` |")
     lines.append("")
 
+    timestamp_source = fingerprint.timestamp_source()
+    if timestamp_source is not None and timestamp_source.is_split:
+        lines.extend([
+            f"**Event time is split across `{timestamp_source.date_field}` and "
+            f"`{timestamp_source.time_field}`.** The ingest pipeline must combine them into "
+            "`@timestamp`, or the rule cannot be time-scoped and its alerts cannot be ordered.",
+            "",
+        ])
+
     if candidate.missing_fields:
         lines.extend([
             f"**Blocked:** the rule also needs {', '.join(f'`{f}`' for f in candidate.missing_fields)}, "

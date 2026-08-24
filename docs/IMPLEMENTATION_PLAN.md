@@ -367,6 +367,27 @@ Design decisions worth knowing before Phase 2:
 - `pyyaml` added to `requirements.txt`. Not a new install (pysigma already pulls it)
   but now imported directly, so it is declared.
 
+**Correction (2026-08-24): event time split across two columns.** Profiling recognised
+only a single full timestamp column. A source that writes `date` and `time` separately —
+which W3C/IIS *specifies*, and which FortiGate and many CSV exports follow — resolved to
+"no timestamp at all". The damage was not a missing number: the hypothesis module put
+**"event timestamp"** on the onboarding requirements list, asking a client to add a field
+they already send, in a document that feeds a SOW.
+
+`LogFingerprint.timestamp_source()` now resolves either a single column or a date+time
+pair, and the split is reported as what it actually is: an ingest-design requirement to
+combine them into `@timestamp`, which is exactly what the official FortiGate integration
+does. `parse_timestamp` also refuses a bare date, which `fromisoformat` used to turn into
+midnight and silently collapse a sample's whole time span. A lone date or a lone time is
+not accepted as event time either.
+
+Two knock-on corrections: a date or time column now maps to `@timestamp` in ECS gap
+analysis, and URL decoding treats an unambiguous URL-query field name (`cs-uri-query`,
+`url.query`, `ClientRequestQuery`) as proof that `+` means a space. W3C logs the query
+with no leading `?` and often no percent escape at all, so without that the Sigma SQL
+injection rule never fired on an IIS sample. `tests/fixtures/iis_w3c_access.csv` covers
+the format end to end: 2 of its 20 events match that rule, 1 matches path traversal.
+
 Carried into later phases:
 
 - The internal taxonomy is seeded but **not yet consulted** — `taxonomy_matcher.py`

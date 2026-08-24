@@ -11,12 +11,19 @@ from engine.profiling import ecs_gap
 from engine.profiling.data_classifier import DataCategory, classify
 from engine.profiling.ecs_gap import DataStreamProfile, IntegrationIndex, find_integration
 from engine.profiling.entity_recognition import EntityType, detect_entity_type
-from engine.profiling.field_profiler import FieldProfile, profile_fields
+from engine.profiling.field_profiler import (
+    FieldProfile,
+    build_fingerprint,
+    find_timestamp_source,
+    parse_timestamp,
+    profile_fields,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 CLOUDFLARE = FIXTURES / "cloudflare_waf_firewall_events.csv"
 FORTIGATE = FIXTURES / "fortinet_fortigate_traffic.csv"
 WINDOWS = FIXTURES / "windows_security_logons.csv"
+W3C = FIXTURES / "iis_w3c_access.csv"
 
 
 # --------------------------------------------------------- entity recognition
@@ -104,6 +111,75 @@ def test_top_values_report_the_distribution():
     top_action, count = profiles["Action"].top_values[0]
     assert top_action == "allow"
     assert count > 1
+
+
+# ------------------------------------------------------------ event time
+
+
+def test_a_full_timestamp_column_is_the_event_time():
+    profiles = [FieldProfile(field_name="Datetime", dtype="timestamp", cardinality=37,
+                             null_rate=0.0, example="2026-03-11T09:02:05Z")]
+
+    source = find_timestamp_source(profiles)
+
+    assert source.field_name == "Datetime"
+    assert source.is_split is False
+    assert source.granularity == "second"
+
+
+def test_a_date_column_plus_a_time_column_is_one_event_time():
+    """W3C/IIS specifies date and time as separate fields; so does FortiGate."""
+    profiles = [
+        FieldProfile(field_name="date", dtype="date", cardinality=1, null_rate=0.0,
+                     example="2026-07-14"),
+        FieldProfile(field_name="time", dtype="time", cardinality=20, null_rate=0.0,
+                     example="01:02:11"),
+    ]
+
+    source = find_timestamp_source(profiles)
+
+    assert source.is_split is True
+    assert (source.date_field, source.time_field) == ("date", "time")
+    assert source.granularity == "second"
+    assert source.resolve({"date": "2026-07-14", "time": "01:02:11"}).hour == 1
+
+
+def test_a_lone_date_or_a_lone_time_is_not_an_event_time():
+    """Neither can place an event on a timeline, and midnight is not an answer."""
+    only_date = [FieldProfile(field_name="date", dtype="date", cardinality=1, null_rate=0.0)]
+    only_time = [FieldProfile(field_name="time", dtype="time", cardinality=9, null_rate=0.0)]
+
+    assert find_timestamp_source(only_date) is None
+    assert find_timestamp_source(only_time) is None
+
+
+def test_a_bare_date_does_not_parse_to_midnight():
+    assert parse_timestamp("2026-04-02") is None
+    assert parse_timestamp("2026-04-02", allow_date_only=True).hour == 0
+    assert parse_timestamp("2026-04-02 08:14:21").hour == 8
+
+
+def test_date_and_time_columns_get_their_own_dtypes():
+    sample = parser.parse(W3C)
+    profiles = {p.field_name: p for p in profile_fields(sample.records, field_names=sample.field_names)}
+
+    assert profiles["date"].dtype == "date"
+    assert profiles["time"].dtype == "time"
+
+
+def test_w3c_sample_resolves_its_event_time():
+    sample = parser.parse(W3C)
+    profiles = profile_fields(sample.records, field_names=sample.field_names)
+    fingerprint = build_fingerprint(profiles, classify(sample.field_names),
+                                    record_count=sample.record_count)
+
+    source = fingerprint.timestamp_source()
+
+    assert source is not None and source.is_split
+    moments = [source.resolve(record.fields) for record in sample.records]
+    assert all(moment is not None for moment in moments)
+    span = (max(moments) - min(moments)).total_seconds()
+    assert span == 8145  # 01:02:11 to 03:17:56, the range the fixture covers
 
 
 # ---------------------------------------------------------- data classifier
@@ -247,6 +323,20 @@ def test_already_ecs_fields_are_left_alone():
     assert report.compliant_fields == ["source.ip"]
     assert profiles[0].is_ecs_compliant is True
     assert profiles[0].suggested_ecs_field is None
+
+
+def test_split_timestamp_is_reported_as_an_ingest_requirement():
+    profiles = [
+        FieldProfile(field_name="date", dtype="date", cardinality=1, null_rate=0.0),
+        FieldProfile(field_name="time", dtype="time", cardinality=20, null_rate=0.0),
+        FieldProfile(field_name="c-ip", dtype="string", cardinality=6, null_rate=0.0),
+    ]
+
+    report = ecs_gap.analyse(profiles, _index())
+
+    assert any("split across 'date' and 'time'" in note for note in report.notes)
+    assert profiles[0].suggested_ecs_field == "@timestamp"
+    assert profiles[1].suggested_ecs_field == "@timestamp"
 
 
 def test_index_cache_key_includes_the_indexer_version():

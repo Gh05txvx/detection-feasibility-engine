@@ -160,6 +160,17 @@ def test_plus_is_not_rewritten_in_a_value_that_was_never_encoded(tmp_path):
     assert "query" not in record.raw_fields
 
 
+def test_w3c_query_column_decodes_without_a_percent_escape(tmp_path):
+    """IIS logs the query with no leading '?' and often only '+' for spaces."""
+    path = tmp_path / "iis.csv"
+    path.write_text("cs-uri-query\nid=44+UNION+SELECT+1--\n", encoding="utf-8")
+
+    record = parser.parse(path).records[0]
+
+    assert record.fields["cs-uri-query"] == "id=44 UNION SELECT 1--"
+    assert record.raw_fields["cs-uri-query"] == "id=44+UNION+SELECT+1--"
+
+
 def test_plus_is_decoded_when_the_value_really_is_encoded(tmp_path):
     path = tmp_path / "web.csv"
     path.write_text("query\na%3D1+OR+2\n", encoding="utf-8")

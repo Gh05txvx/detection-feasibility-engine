@@ -234,6 +234,32 @@ def test_correlate_counts_the_internal_taxonomy_too():
     assert "taxonomy" in check.detail
 
 
+def test_split_event_time_is_an_ingest_ask_not_a_missing_field():
+    """The client already sends the timestamp; asking them to add one is wrong."""
+    profiles = [
+        _profile("date", dtype="date", example="2026-07-14"),
+        _profile("time", dtype="time", example="01:02:11"),
+        _profile("user"),
+        _profile("status"),
+        _profile("srcip", entity_type=EntityType.IP),
+    ]
+    fingerprint = _fingerprint(profiles, data_category=DataCategory.AUTHENTICATION_LOGS,
+                               record_count=20)
+    records = [
+        LogRecord(line=index + 2, fields={"date": "2026-07-14", "time": f"01:{index:02d}:11"})
+        for index in range(20)
+    ]
+
+    report = build_report("sample.csv", fingerprint, records=records,
+                          sigma_index=_sigma_index("T1110"))
+
+    check = {c.name: c for c in report.reports[0].checks}["contextual_filtering"]
+    assert check.status is CheckStatus.PASS
+    assert "combine them into @timestamp" in check.detail
+    assert "event timestamp" not in report.onboarding_requirements
+    assert any("into @timestamp during ingest" in item for item in report.onboarding_requirements)
+
+
 def test_contextual_filtering_fails_without_a_timestamp():
     fingerprint = _fingerprint(
         [_profile("user"), _profile("status"), _profile("srcip", entity_type=EntityType.IP)],

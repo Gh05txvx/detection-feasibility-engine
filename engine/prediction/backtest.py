@@ -36,7 +36,7 @@ from pydantic import BaseModel, Field
 
 from engine.ingestion.schemas import LogRecord
 from engine.matching.candidate import MatchCandidate
-from engine.profiling.field_profiler import LogFingerprint, parse_timestamp
+from engine.profiling.field_profiler import LogFingerprint
 from engine.storage.taxonomy_store import TaxonomyEntry
 
 # A rule matching more than this share of all events is unlikely to be a
@@ -473,14 +473,14 @@ def _apply_aggregation(
     group_by = [str(field) for field in aggregation.get("group_by", [])]
     window_seconds = _window_seconds(str(aggregation.get("window", "")))
 
-    timestamp_profile = fingerprint.timestamp_profile()
+    timestamp_source = fingerprint.timestamp_source()
     buckets: dict[tuple, int] = defaultdict(int)
 
     for record in matched:
         key = tuple(_value_of(record, _resolve(field, resolver)) for field in group_by)
         bucket = 0
-        if window_seconds and timestamp_profile is not None:
-            moment = parse_timestamp(record.fields.get(timestamp_profile.field_name))
+        if window_seconds and timestamp_source is not None:
+            moment = timestamp_source.resolve(record.fields)
             if moment is not None:
                 bucket = int(moment.timestamp() // window_seconds)
         buckets[(key, bucket)] += 1
@@ -488,7 +488,7 @@ def _apply_aggregation(
     alerts = sum(1 for count in buckets.values() if count >= threshold)
 
     detail = f"grouped by {', '.join(group_by) or 'nothing'}, threshold {threshold}"
-    if window_seconds and timestamp_profile is not None:
+    if window_seconds and timestamp_source is not None:
         detail += f", tumbling {aggregation.get('window')} windows"
     elif window_seconds:
         detail += ", but no timestamp field was found so the whole sample counted as one window"
@@ -515,12 +515,11 @@ def _window_seconds(window: str) -> int:
 
 
 def _sample_span_seconds(records: Sequence[LogRecord], fingerprint: LogFingerprint) -> float | None:
-    profile = fingerprint.timestamp_profile()
-    if profile is None or not records:
+    source = fingerprint.timestamp_source()
+    if source is None or not records:
         return None
     moments = [
-        moment for moment in
-        (parse_timestamp(record.fields.get(profile.field_name)) for record in records)
+        moment for moment in (source.resolve(record.fields) for record in records)
         if moment is not None
     ]
     if len(moments) < 2:

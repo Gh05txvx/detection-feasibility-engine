@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import pandas as pd
 from pydantic import BaseModel, Field
@@ -28,6 +28,11 @@ _INT_RE = re.compile(r"^[+-]?\d+$")
 _FLOAT_RE = re.compile(r"^[+-]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?$")
 _ISO_TIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?")
 _TIME_NAME_RE = re.compile(r"(time|date|timestamp|@timestamp|datetime|epoch)", re.IGNORECASE)
+# W3C/IIS, FortiGate and many CSV exports split event time across two columns.
+_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_TIME_ONLY_RE = re.compile(r"^\d{1,2}:\d{2}(:\d{2}(\.\d+)?)?$")
+_SECOND_RE = re.compile(r"\d{1,2}:\d{2}:\d{2}")
+_MINUTE_RE = re.compile(r"\d{1,2}:\d{2}")
 
 
 class FieldProfile(BaseModel):
@@ -44,6 +49,47 @@ class FieldProfile(BaseModel):
     # are what make a profile reviewable by a human.
     top_values: list[tuple[str, int]] = Field(default_factory=list)
     example: str | None = None
+
+
+class TimestampSource(BaseModel):
+    """Where event time comes from: one column, or a date column plus a time column.
+
+    The split form is not an oddity to work around. W3C/IIS *specifies* `date`
+    and `time` as separate fields, and that is the format the whole `webserver`
+    Sigma taxonomy is written against; FortiGate and many CSV exports do the
+    same. Treating it as "no timestamp" makes the engine ask a client to add a
+    field they already send.
+    """
+
+    field_name: str | None = None
+    date_field: str | None = None
+    time_field: str | None = None
+    granularity: str = "unknown"  # second | minute | day | unknown
+
+    @property
+    def is_split(self) -> bool:
+        return self.date_field is not None and self.time_field is not None
+
+    @property
+    def fields(self) -> list[str]:
+        if self.is_split:
+            return [self.date_field or "", self.time_field or ""]
+        return [self.field_name or ""]
+
+    @property
+    def description(self) -> str:
+        return " + ".join(self.fields)
+
+    def resolve(self, fields: Mapping[str, Any]) -> datetime | None:
+        """Read the event time out of one record."""
+        if self.is_split:
+            date_value = fields.get(self.date_field or "")
+            time_value = fields.get(self.time_field or "")
+            if date_value is None or time_value is None:
+                return None
+            combined = f"{str(date_value).strip()} {str(time_value).strip()}".strip()
+            return parse_timestamp(combined)
+        return parse_timestamp(fields.get(self.field_name or ""))
 
 
 class LogFingerprint(BaseModel):
@@ -70,16 +116,9 @@ class LogFingerprint(BaseModel):
                 return profile
         return None
 
-    def timestamp_profile(self) -> FieldProfile | None:
-        """The field carrying event time, by inferred type first, ECS name second."""
-        for profile in self.profiles:
-            if profile.dtype == "timestamp":
-                return profile
-        for profile in self.profiles:
-            ecs_name = profile.field_name if profile.is_ecs_compliant else profile.suggested_ecs_field
-            if ecs_name == "@timestamp":
-                return profile
-        return None
+    def timestamp_source(self) -> TimestampSource | None:
+        """How to read event time from a record of this sample, if it is possible."""
+        return find_timestamp_source(self.profiles)
 
     def resolvable_names(self) -> dict[str, str]:
         """Every lowercased name this sample answers to -> the field providing it.
@@ -163,16 +202,24 @@ def build_fingerprint(
     )
 
 
-def parse_timestamp(value: Any) -> datetime | None:
+def parse_timestamp(value: Any, *, allow_date_only: bool = False) -> datetime | None:
     """Parse an event timestamp, accepting ISO-8601 and epoch seconds/millis.
 
     Naive timestamps are read as UTC. Log exports rarely carry an offset, and
     guessing local time would silently shift every window calculation.
+
+    A bare date is refused by default. ``fromisoformat`` happily turns
+    ``2026-04-02`` into midnight, which would collapse every event in a
+    date-only column onto the same instant and quietly produce a zero-length
+    sample span. Callers that genuinely mean a date pass ``allow_date_only``.
     """
     if value is None:
         return None
     text = str(value).strip()
     if not text:
+        return None
+
+    if not allow_date_only and _DATE_ONLY_RE.match(text):
         return None
 
     try:
@@ -184,6 +231,51 @@ def parse_timestamp(value: Any) -> datetime | None:
         return None
 
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def find_timestamp_source(profiles: Sequence[FieldProfile]) -> TimestampSource | None:
+    """Work out how event time can be read from these fields.
+
+    A single full timestamp wins. Failing that, a date column paired with a
+    time column is a complete event time and is treated as one. A lone date or
+    a lone time is not: neither can place an event on a timeline, and pretending
+    otherwise is how a sample ends up with every event at midnight.
+    """
+    for profile in profiles:
+        if profile.dtype == "timestamp":
+            return TimestampSource(
+                field_name=profile.field_name, granularity=_granularity(profile.example)
+            )
+
+    date_profile = next((profile for profile in profiles if profile.dtype == "date"), None)
+    time_profile = next((profile for profile in profiles if profile.dtype == "time"), None)
+    if date_profile and time_profile:
+        return TimestampSource(
+            date_field=date_profile.field_name,
+            time_field=time_profile.field_name,
+            granularity=_granularity(time_profile.example),
+        )
+
+    for profile in profiles:
+        ecs_name = profile.field_name if profile.is_ecs_compliant else profile.suggested_ecs_field
+        if ecs_name == "@timestamp" and profile.dtype == "timestamp":
+            return TimestampSource(
+                field_name=profile.field_name, granularity=_granularity(profile.example)
+            )
+
+    return None
+
+
+def _granularity(example: str | None) -> str:
+    if not example:
+        return "unknown"
+    if _SECOND_RE.search(example):
+        return "second"
+    if _MINUTE_RE.search(example):
+        return "minute"
+    if _DATE_ONLY_RE.match(example.strip()):
+        return "day"
+    return "unknown"
 
 
 def _ordered_columns(columns: Iterable[Any], field_names: Sequence[str] | None) -> list[Any]:
@@ -222,6 +314,12 @@ def _infer_dtype(field_name: str, values: Sequence[str]) -> str:
         return "boolean"
     if all(_ISO_TIME_RE.match(value.strip()) for value in values):
         return "timestamp"
+    # A date or a time on its own is not an event timestamp, but a pair of them
+    # is. Labelling them distinctly is what lets the pair be recognised.
+    if all(_DATE_ONLY_RE.match(value.strip()) for value in values):
+        return "date"
+    if all(_TIME_ONLY_RE.match(value.strip()) for value in values):
+        return "time"
     if all(_INT_RE.match(value.strip()) for value in values):
         # A 10 or 13 digit integer in a time-ish field is epoch seconds/millis.
         if _TIME_NAME_RE.search(field_name) and all(len(value.strip()) in (10, 13) for value in values):

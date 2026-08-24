@@ -75,6 +75,13 @@ class RejectionReport(BaseModel):
     def onboarding_requirements(self) -> list[str]:
         """Every distinct gap, in first-seen order: the ask for the client."""
         seen: dict[str, None] = {}
+        if self.context.timestamp_needs_combining:
+            # Not a missing field: the data is there, but the ingest design has
+            # to join it up. Still an ask, and still belongs on this list.
+            seen.setdefault(
+                f"combine {self.context.timestamp_description} into @timestamp during ingest",
+                None,
+            )
         for report in self.reports:
             for check in report.failed_checks:
                 for item in check.missing:

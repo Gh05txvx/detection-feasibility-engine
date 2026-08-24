@@ -37,6 +37,12 @@ _SNIFF_BYTES = 65_536
 _URL_FIELD_HINT = re.compile(r"(query|uri|url|path|referer|referrer)", re.IGNORECASE)
 _PERCENT_ESCAPE = re.compile(r"%[0-9A-Fa-f]{2}")
 _QUERY_FIELD_HINT = re.compile(r"query", re.IGNORECASE)
+# Names that can only mean "the query component of a URL". A bare `query`
+# column is not one of them: in a database audit log that is SQL text.
+_URL_QUERY_FIELD = re.compile(
+    r"(uri[-_.]?query|url[-_.]?query|request[-_.]?query|query[-_.]?string|querystring)",
+    re.IGNORECASE,
+)
 
 
 class ParseError(Exception):
@@ -320,11 +326,18 @@ def _decode_url_value(name: str, value: Any) -> str | None:
     for ordinary logs.
 
     The `+`-means-space rule is the dangerous one, because it rewrites a
-    character that is perfectly legal unencoded. It is applied only when the
-    value is demonstrably a query string: it starts with `?`, or it is a
-    query-ish field that also carries a percent escape. Without that guard, a
-    database audit log with a `query` column turns `SELECT a+b` into
-    `SELECT a b` and every later stage sees the corrupted text.
+    character that is perfectly legal unencoded. It is applied when the value is
+    demonstrably a query string, by any of three signals:
+
+    * it starts with `?`;
+    * the field name can only mean a URL query (`cs-uri-query`, `url.query`,
+      `ClientRequestQuery`) -- W3C logs the query without a leading `?` and
+      often with no percent escape at all, so `id=1+OR+1=1` has to decode;
+    * the name merely mentions "query" *and* the value carries a percent escape,
+      which is the weakest case and needs the extra proof.
+
+    Without that last distinction a database audit log's `query` column turns
+    `SELECT a+b` into `SELECT a b`, and every later stage sees corrupted text.
     """
     if not isinstance(value, str) or not value:
         return None
@@ -333,7 +346,11 @@ def _decode_url_value(name: str, value: Any) -> str | None:
     if not _URL_FIELD_HINT.search(name) and not has_escape:
         return None
 
-    is_query_string = value.startswith("?") or (has_escape and bool(_QUERY_FIELD_HINT.search(name)))
+    is_query_string = (
+        value.startswith("?")
+        or bool(_URL_QUERY_FIELD.search(name))
+        or (has_escape and bool(_QUERY_FIELD_HINT.search(name)))
+    )
     decoded = unquote_plus(value) if is_query_string else unquote(value)
 
     return decoded if decoded != value else None

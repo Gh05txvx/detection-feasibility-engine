@@ -31,7 +31,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 from engine.profiling.entity_recognition import EntityType
-from engine.profiling.field_profiler import FieldProfile
+from engine.profiling.field_profiler import FieldProfile, find_timestamp_source
 from engine.storage.db import REPO_ROOT
 
 DEFAULT_CORPUS_PATH = REPO_ROOT / "data" / "elastic-integrations"
@@ -562,6 +562,16 @@ def analyse(
             report.unmapped_fields.append(name)
 
     _add_notes(report, match, index)
+
+    source = find_timestamp_source(profiles)
+    if source is not None and source.is_split:
+        report.notes.append(
+            f"Event time arrives split across '{source.date_field}' and '{source.time_field}', which "
+            "is how W3C/IIS, FortiGate and many CSV exports write it. The ingest pipeline must "
+            "combine them into @timestamp; until it does, no time-windowed rule can be built and "
+            "alert volume cannot be projected."
+        )
+
     return report
 
 
@@ -605,7 +615,9 @@ def _heuristic_ecs_field(profile: FieldProfile) -> str | None:
     """Suggest an ECS field from the entity type and what the name implies."""
     lowered = profile.field_name.lower()
 
-    if profile.dtype == "timestamp" and _TIME_NAMES.search(lowered):
+    # A date column and a time column both feed @timestamp once the pipeline
+    # joins them; the report's note explains that they are two halves of one field.
+    if profile.dtype in {"timestamp", "date", "time"} and _TIME_NAMES.search(lowered):
         return "@timestamp"
 
     entity = profile.entity_type

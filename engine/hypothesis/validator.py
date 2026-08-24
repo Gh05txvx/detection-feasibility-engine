@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field, computed_field
 from engine.hypothesis.able import EvidenceRequirement, Hypothesis
 from engine.ingestion.schemas import LogRecord
 from engine.matching.sigma_matcher import SigmaRuleIndex
-from engine.profiling.field_profiler import LogFingerprint, parse_timestamp
+from engine.profiling.field_profiler import LogFingerprint
 
 # A behavior judged against "normal" needs enough events and enough elapsed time
 # for "normal" to mean something. These are deliberately blunt: the point is to
@@ -85,7 +85,10 @@ class SampleContext(BaseModel):
     """Facts about the sample that several checks need."""
 
     record_count: int = 0
-    timestamp_field: str | None = None
+    timestamp_description: str | None = None
+    # True when event time arrives as a date column plus a time column, which
+    # the ingest pipeline has to combine before any rule can window events.
+    timestamp_needs_combining: bool = False
     time_span_seconds: float | None = None
     sub_minute_granularity: bool = False
     free_text_field: str | None = None
@@ -93,19 +96,20 @@ class SampleContext(BaseModel):
 
 def build_context(fingerprint: LogFingerprint, records: Sequence[LogRecord] | None = None) -> SampleContext:
     """Derive timestamp coverage and span once, for reuse across checks."""
-    timestamp_profile = fingerprint.timestamp_profile()
+    source = fingerprint.timestamp_source()
     context = SampleContext(
         record_count=fingerprint.record_count,
-        timestamp_field=timestamp_profile.field_name if timestamp_profile else None,
+        timestamp_description=source.description if source else None,
+        timestamp_needs_combining=bool(source and source.is_split),
         free_text_field=_free_text_field(fingerprint),
     )
 
-    if timestamp_profile is None or not records:
+    if source is None or not records:
         return context
 
     moments = []
     for record in records:
-        parsed = parse_timestamp(record.fields.get(timestamp_profile.field_name))
+        parsed = source.resolve(record.fields)
         if parsed is not None:
             moments.append(parsed)
 
@@ -338,15 +342,15 @@ def _contextual_filtering(
     problems: list[str] = []
     missing: list[str] = []
 
-    if context.timestamp_field is None:
+    if context.timestamp_description is None:
         problems.append("no timestamp field was found, so no rule can be time-scoped or investigated")
         # Same wording as the evidence requirement's label, so the report's
         # onboarding list asks for it once rather than twice in two phrasings.
         missing.append("event timestamp")
     elif not context.sub_minute_granularity and rule_type in _RULE_TYPES_NEEDING_CORRELATION:
         problems.append(
-            f"timestamps in '{context.timestamp_field}' have no sub-minute component, too coarse to order "
-            f"or window events for a {rule_type} rule"
+            f"timestamps in {context.timestamp_description} have no sub-minute component, too coarse "
+            f"to order or window events for a {rule_type} rule"
         )
         missing.append("timestamps with at least second granularity")
 
@@ -376,14 +380,16 @@ def _contextual_filtering(
             missing=missing,
         )
 
-    return ValidationCheck(
-        name="contextual_filtering",
-        status=CheckStatus.PASS,
-        detail=(
-            f"Timestamp granularity, sample span, and correlation fields are sufficient for a "
-            f"{rule_type} rule."
-        ),
+    detail = (
+        f"Timestamp granularity, sample span, and correlation fields are sufficient for a "
+        f"{rule_type} rule."
     )
+    if context.timestamp_needs_combining:
+        detail += (
+            f" Event time arrives split across {context.timestamp_description}; the ingest pipeline "
+            "must combine them into @timestamp before the rule can window events."
+        )
+    return ValidationCheck(name="contextual_filtering", status=CheckStatus.PASS, detail=detail)
 
 
 # -------------------------------------------------------------------- helpers
