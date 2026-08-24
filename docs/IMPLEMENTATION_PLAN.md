@@ -516,11 +516,36 @@ Decisions that shape the numbers:
 ### Phase 5 — Runbook generator + workflow integration
 **Objective:** produce a review-ready artifact analysts actually use, and make the CLI pipeline standard practice at project kickoff.
 
-- [ ] `engine/runbook/generator.py` — markdown runbook per `docs/BLUEPRINT.md` Section 5.7's field list
-- [ ] `engine/pipeline.py` — the orchestrator (`process_log_sample()`) tying ingestion → profiling → matching → classification → hypothesis-or-prediction → runbook together
+- [x] `engine/runbook/generator.py` — markdown runbook per `docs/BLUEPRINT.md` Section 5.7's field list
+- [x] `engine/pipeline.py` — the orchestrator (`process_log_sample()`) tying ingestion → profiling → matching → classification → hypothesis-or-prediction → runbook together
 - [ ] Use in at least one real project, start to handover, still CLI-based
 
 **Definition of done:** used in at least 1 real project, start to handover. Engine is still CLI-only at this point.
+
+**Status: code complete, Definition of Done NOT met (2026-08-24).** The DoD is a real
+project from start to handover; nothing can substitute for that. The engine is
+CLI-usable end to end: `python scripts/cli.py <sample> --runbook-dir out/` produces a
+draft runbook per candidate.
+
+- **`pipeline.process_log_sample()` is now the single entry point.** The CLI is
+  argument parsing and rendering only. Phase 6 wires a web layer to one function
+  rather than reimplementing the flow.
+- **The draft query problem from Phase 0 is closed.** Converted Sigma rules used to
+  reference `cs-method`, a field name no Elastic index holds, because the shipped
+  pySigma ECS pipelines cover Windows and Zeek, not the webserver taxonomy. The
+  generator now builds a processing pipeline *from the sample's own field mapping*, so
+  the Cloudflare fixture converts to
+  `http.request.method`/`url.query`/`http.response.status_code`.
+- **Which field names the query targets is a decision, and the runbook states it.**
+  An official integration was found → ECS names, because installing it is the
+  recommendation. No integration → the sample's own vendor names, because that is what
+  the index will hold. The mapping table is printed either way.
+- Taxonomy entries have no Sigma rule to convert, so their logic is rendered as draft
+  KQL. Regex conditions are emitted as a note rather than a broken clause: KQL has no
+  regex operator, and pretending otherwise would hand someone a query that silently
+  matches nothing.
+- Every runbook opens with "not deployed, not approved" and closes with a review
+  checklist with a signature line, per `docs/BLUEPRINT.md` 5.8.
 
 ### Phase 6 — Local web UI
 **Objective:** wrap the now-validated engine with the UI layer described in `docs/BLUEPRINT.md` Section 8. Only start this once Phase 5's Definition of Done is met.

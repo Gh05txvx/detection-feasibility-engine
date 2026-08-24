@@ -2,10 +2,11 @@
 
     python scripts/cli.py tests/fixtures/cloudflare_waf_firewall_events.csv
 
-Phase 1 scope: ingestion -> profiling -> ECS gap -> Sigma matching. The internal
-taxonomy (Phase 3), the hypothesis module for the NO MATCH path (Phase 2), rule
-type classification (Phase 3), and backtesting (Phase 4) are not wired in yet;
-where they would speak, the output says so rather than staying silent.
+Orchestration lives in `engine/pipeline.py`; this file only parses arguments and
+renders. Phases 0-5 are wired up: ingestion, profiling, ECS gap analysis,
+matching against both the Sigma corpus and the internal taxonomy, Elastic rule
+type selection, backtesting, and runbook generation, with the ABLE hypothesis
+module on the no-match path.
 """
 
 from __future__ import annotations
@@ -20,17 +21,11 @@ from typing import Sequence
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from engine import pipeline  # noqa: E402  (needs sys.path set first)
 from engine.classification import rule_type_classifier  # noqa: E402
-from engine.classification.rule_type_classifier import RuleTypeDecision  # noqa: E402
 from engine.hypothesis import report as rejection_report  # noqa: E402
-from engine.ingestion import parser as ingestion  # noqa: E402  (needs sys.path set first)
-from engine.matching import sigma_matcher, taxonomy_matcher  # noqa: E402
-from engine.matching.candidate import MatchCandidate  # noqa: E402
-from engine.profiling import ecs_gap  # noqa: E402
-from engine.profiling.data_classifier import classify  # noqa: E402
-from engine.prediction import backtest as prediction  # noqa: E402
-from engine.prediction.backtest import PredictionResult  # noqa: E402
-from engine.profiling.field_profiler import LogFingerprint, build_fingerprint, profile_fields  # noqa: E402
+from engine.ingestion import parser as ingestion  # noqa: E402
+from engine.pipeline import PipelineResult  # noqa: E402
 from engine.storage.taxonomy_store import TaxonomyEntry  # noqa: E402
 
 RULE = "-" * 78
@@ -39,92 +34,41 @@ RULE = "-" * 78
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
 
+    _status("loading corpus indexes (first run builds them, ~1 min)...", args)
     try:
-        sample = ingestion.parse(args.sample, limit=args.limit)
+        result = pipeline.process_log_sample(
+            args.sample,
+            limit=args.limit,
+            top=args.top,
+            min_confidence=args.min_confidence,
+            log_rate_per_day=args.log_rate,
+            taxonomy=_taxonomy_entries(),
+            sigma_corpus=args.sigma_corpus,
+            integrations_corpus=args.integrations,
+            rebuild_index=args.rebuild_index,
+            runbook_dir=args.runbook_dir,
+            generate_runbooks=not args.no_runbooks,
+        )
     except ingestion.ParseError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    profiles = profile_fields(sample.records, field_names=sample.field_names)
-    classification = classify(sample.field_names)
-
-    _status("loading integration index (first run builds it, ~1 min)...", args)
-    integration_index = ecs_gap.load_index(args.integrations, rebuild=args.rebuild_index)
-    gap = ecs_gap.analyse(profiles, integration_index, product_hint=classification.inferred_product)
-
-    fingerprint = build_fingerprint(
-        profiles,
-        classification,
-        record_count=sample.record_count,
-        integration_name=gap.integration.name if gap.integration else None,
-    )
-
-    _status("loading sigma rule index (first run builds it, ~30 s)...", args)
-    rule_index = sigma_matcher.load_rule_index(args.sigma_corpus, rebuild=args.rebuild_index)
-    # The two matching sources run in parallel, not as fallbacks (BLUEPRINT 5.3).
-    entries = _taxonomy_entries()
-    candidates: list[MatchCandidate] = []
-    if rule_index is not None:
-        candidates += sigma_matcher.match(fingerprint, rule_index, min_confidence=args.min_confidence)
-    candidates += taxonomy_matcher.match(fingerprint, entries, min_confidence=args.min_confidence)
-    candidates.sort(key=lambda candidate: (-candidate.confidence, candidate.title))
-
-    entries_by_slug = {entry.slug: entry for entry in entries}
-    decisions = {
-        candidate.rule_ref: rule_type_classifier.classify(
-            candidate,
-            fingerprint,
-            taxonomy_entry=entries_by_slug.get(candidate.rule_ref.removeprefix("internal:")),
-        )
-        for candidate in candidates
-    }
-
-    # Backtesting re-reads rule files and runs logic over every record, so it is
-    # done only for the candidates actually shown.
-    predictions: dict[str, PredictionResult] = {}
-    for candidate in candidates[: args.top]:
-        entry = entries_by_slug.get(candidate.rule_ref.removeprefix("internal:"))
-        sigma_rule = (
-            sigma_matcher.load_rule(rule_index, candidate.rule_path or "")
-            if entry is None and rule_index is not None else None
-        )
-        predictions[candidate.rule_ref] = prediction.predict(
-            candidate,
-            sample.records,
-            fingerprint,
-            sigma_rule=sigma_rule,
-            taxonomy_entry=entry,
-            log_rate_per_day=args.log_rate,
-        )
-
-    # NO MATCH is the hypothesis module's path, not a dead end (BLUEPRINT 5.5).
-    rejection = None
-    if not candidates:
-        rejection = rejection_report.build_report(
-            sample.path,
-            fingerprint,
-            records=sample.records,
-            sigma_index=rule_index,
-            taxonomy_techniques={
-                technique for entry in entries for technique in entry.mitre_techniques
-            },
-        )
-
-    markdown = rejection_report.render_markdown(rejection) if rejection else None
+    markdown = rejection_report.render_markdown(result.rejection) if result.rejection else None
     if markdown and args.out:
         out_path = Path(args.out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(markdown, encoding="utf-8")
 
     if args.json:
-        _emit_json(sample, fingerprint, gap, candidates, rule_index, rejection, decisions, predictions)
+        print(json.dumps(_json_payload(result), indent=2, ensure_ascii=False))
         return 0
 
-    _report_sample(sample)
-    _report_fingerprint(fingerprint)
-    _report_fields(fingerprint)
-    _report_ecs_gap(gap)
-    _report_candidates(candidates, rule_index, fingerprint, args.top, decisions, predictions, len(entries))
+    _report_sample(result)
+    _report_fingerprint(result)
+    _report_fields(result)
+    _report_ecs_gap(result)
+    _report_candidates(result, args.top)
+    _report_runbooks(result, args)
     if markdown:
         print()
         print(RULE)
@@ -137,33 +81,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def _taxonomy_entries() -> list[TaxonomyEntry]:
-    """Load the internal taxonomy, if the database has been created."""
-    try:
-        from engine.storage import db, taxonomy_store
-
-        if not db.DEFAULT_DB_PATH.exists():
-            return []
-        with db.connection() as conn:
-            return taxonomy_store.list_entries(conn)
-    except Exception as exc:  # noqa: BLE001 - report, but never block matching
-        print(f"  ... internal taxonomy unavailable ({exc})", file=sys.stderr)
-        return []
-
-
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     arg_parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     arg_parser.add_argument("sample", help="path to the raw log sample (CSV / JSON / JSONL)")
     arg_parser.add_argument("--limit", type=int, default=None, help="read at most N records")
     arg_parser.add_argument("--top", type=int, default=10, help="show at most N match candidates (default 10)")
     arg_parser.add_argument(
-        "--min-confidence", type=float, default=0.4, help="drop candidates below this confidence (default 0.4)"
+        "--min-confidence", type=float, default=pipeline.DEFAULT_MIN_CONFIDENCE,
+        help="drop candidates below this confidence (default 0.4)",
     )
     arg_parser.add_argument("--json", action="store_true", help="emit machine-readable JSON instead of a report")
     arg_parser.add_argument("--out", default=None, help="write the rejection report markdown to this path")
+    arg_parser.add_argument("--runbook-dir", default=None, help="write a runbook per shown candidate into this directory")
+    arg_parser.add_argument("--no-runbooks", action="store_true", help="skip runbook generation")
     arg_parser.add_argument(
         "--log-rate", type=float, default=None,
         help="expected production volume in events/day; without it, alert volume is extrapolated "
@@ -180,28 +112,42 @@ def _status(message: str, args: argparse.Namespace) -> None:
         print(f"  ... {message}", file=sys.stderr)
 
 
+def _taxonomy_entries() -> list[TaxonomyEntry]:
+    """Load the internal taxonomy, if the database has been created."""
+    try:
+        from engine.storage import db, taxonomy_store
+
+        if not db.DEFAULT_DB_PATH.exists():
+            return []
+        with db.connection() as conn:
+            return taxonomy_store.list_entries(conn)
+    except Exception as exc:  # noqa: BLE001 - report, but never block matching
+        print(f"  ... internal taxonomy unavailable ({exc})", file=sys.stderr)
+        return []
+
+
 # ------------------------------------------------------------------ rendering
 
 
-def _report_sample(sample) -> None:
+def _report_sample(result: PipelineResult) -> None:
+    sample = result.sample
     print(RULE)
     print(f"SAMPLE  {sample.path}")
     print(RULE)
-    detail = f"format {sample.format.value} | encoding {sample.encoding}"
+    detail = f"format {sample.format} | encoding {sample.encoding}"
     if sample.delimiter:
         detail += f" | delimiter {sample.delimiter!r}"
     print(f"  {detail}")
-    print(f"  {sample.record_count} records, {len(sample.field_names)} fields"
+    print(f"  {sample.record_count} records, {sample.field_count} fields"
           + (" (truncated by --limit)" if sample.truncated else ""))
-
-    decoded = sum(1 for record in sample.records if record.raw_fields)
-    if decoded:
-        print(f"  {decoded} record(s) had URL-encoded values decoded at ingestion")
+    if sample.decoded_records:
+        print(f"  {sample.decoded_records} record(s) had URL-encoded values decoded at ingestion")
     for problem in sample.problems:
         print(f"  ! {problem}")
 
 
-def _report_fingerprint(fingerprint: LogFingerprint) -> None:
+def _report_fingerprint(result: PipelineResult) -> None:
+    fingerprint = result.fingerprint
     print()
     print(RULE)
     print("FINGERPRINT")
@@ -222,15 +168,14 @@ def _report_fingerprint(fingerprint: LogFingerprint) -> None:
               " -> an Indicator Match rule is possible against this sample")
 
 
-def _report_fields(fingerprint: LogFingerprint) -> None:
+def _report_fields(result: PipelineResult) -> None:
     print()
     print(RULE)
     print("FIELD PROFILE")
     print(RULE)
-    header = f"  {'field':<26} {'type':<10} {'card':>5} {'null':>6}  {'entity':<13} ecs"
-    print(header)
+    print(f"  {'field':<26} {'type':<10} {'card':>5} {'null':>6}  {'entity':<13} ecs")
     print(f"  {'-' * 26} {'-' * 10} {'-' * 5} {'-' * 6}  {'-' * 13} {'-' * 24}")
-    for profile in fingerprint.profiles:
+    for profile in result.fingerprint.profiles:
         if profile.is_ecs_compliant:
             ecs = "ok"
         elif profile.suggested_ecs_field:
@@ -243,7 +188,8 @@ def _report_fields(fingerprint: LogFingerprint) -> None:
         )
 
 
-def _report_ecs_gap(gap) -> None:
+def _report_ecs_gap(result: PipelineResult) -> None:
+    gap = result.ecs_gap
     print()
     print(RULE)
     print("ECS GAP")
@@ -263,42 +209,34 @@ def _report_ecs_gap(gap) -> None:
     if gap.unmapped_fields:
         print(f"  unmapped               {len(gap.unmapped_fields)}: {', '.join(gap.unmapped_fields)}")
     for note in gap.notes:
-        print(f"  note: {note}")
+        for line in textwrap.wrap(note, width=96):
+            print(f"  note: {line}" if line == textwrap.wrap(note, width=96)[0] else f"        {line}")
 
 
-def _report_candidates(
-    candidates: Sequence[MatchCandidate],
-    rule_index,
-    fingerprint: LogFingerprint,
-    top: int,
-    decisions: dict[str, RuleTypeDecision],
-    predictions: dict[str, PredictionResult],
-    taxonomy_size: int,
-) -> None:
+def _report_candidates(result: PipelineResult, top: int) -> None:
     print()
     print(RULE)
     print("MATCH CANDIDATES")
     print(RULE)
 
-    corpus = f"{len(rule_index.rules)} Sigma rules" if rule_index else "Sigma corpus NOT FOUND"
-    if rule_index and rule_index.parse_errors:
-        corpus += f" ({rule_index.parse_errors} unparsable)"
-    print(f"  searched: {corpus}, {taxonomy_size} internal taxonomy entr(ies)")
-    if rule_index is None:
+    corpus = f"{result.sigma_corpus_rules} Sigma rules" if result.sigma_corpus_available else "Sigma corpus NOT FOUND"
+    print(f"  searched: {corpus}, {result.taxonomy_entries} internal taxonomy entr(ies)")
+    if not result.sigma_corpus_available:
         print("  Run scripts\\setup.ps1 to clone the Sigma corpus.")
 
-    if not candidates:
+    if not result.candidates:
         print()
         print("  NO MATCH. The hypothesis module's rejection report follows.")
         return
 
-    from_sigma = sum(1 for candidate in candidates if candidate.source.value == "sigma")
-    print(f"  {len(candidates)} candidate(s) above the confidence floor "
-          f"({from_sigma} sigma, {len(candidates) - from_sigma} internal); "
-          f"showing {min(top, len(candidates))}")
+    from_sigma = sum(1 for candidate in result.candidates if candidate.source.value == "sigma")
+    print(f"  {len(result.candidates)} candidate(s) above the confidence floor "
+          f"({from_sigma} sigma, {len(result.candidates) - from_sigma} internal); "
+          f"showing {min(top, len(result.candidates))}")
 
-    for position, candidate in enumerate(candidates[:top], start=1):
-        decision = decisions.get(candidate.rule_ref)
+    for position, candidate in enumerate(result.candidates[:top], start=1):
+        decision = result.rule_types.get(candidate.rule_ref)
+        forecast = result.predictions.get(candidate.rule_ref)
         print()
         print(f"  {position:>2}. [{candidate.confidence:.2f}] {candidate.title}")
         print(f"      {candidate.rule_ref}   source={candidate.source.value}"
@@ -319,16 +257,15 @@ def _report_candidates(
         for assumption in candidate.assumptions:
             print(f"        assumes: {assumption}")
 
-        forecast = predictions.get(candidate.rule_ref)
         if forecast:
-            result = forecast.backtest
-            if result.evaluated:
+            backtest = forecast.backtest
+            if backtest.evaluated:
                 headline = (
-                    f"      backtest: {result.matched_events}/{result.total_events} events match "
-                    f"({result.match_rate:.1%})"
+                    f"      backtest: {backtest.matched_events}/{backtest.total_events} events match "
+                    f"({backtest.match_rate:.1%})"
                 )
-                if result.alerts != result.matched_events:
-                    headline += f", {result.alerts} alert(s) after aggregation"
+                if backtest.alerts != backtest.matched_events:
+                    headline += f", {backtest.alerts} alert(s) after aggregation"
                 if forecast.projection_basis != "not projectable":
                     headline += f"  ->  ~{forecast.estimated_alert_volume:,.1f} alerts/day"
                 print(headline + f"   [tier: {forecast.confidence_tier.value}]")
@@ -337,41 +274,43 @@ def _report_candidates(
             for line in textwrap.wrap(forecast.notes, width=98):
                 print(f"        {line}")
 
+
+def _report_runbooks(result: PipelineResult, args: argparse.Namespace) -> None:
+    if not result.runbooks:
+        return
+
     print()
-    print("  The runbook generator (Phase 5) is not built yet. Every candidate above still needs")
-    print("  analyst review before anything is created in Kibana.")
+    print(RULE)
+    print("RUNBOOKS")
+    print(RULE)
+    if args.runbook_dir:
+        print(f"  {len(result.runbooks)} draft runbook(s) written to {args.runbook_dir}")
+        for runbook in result.runbooks:
+            print(f"    {Path(runbook.markdown_path).name}")
+    else:
+        print(f"  {len(result.runbooks)} draft runbook(s) generated in memory "
+              "(pass --runbook-dir DIR to write them)")
+        for runbook in result.runbooks[:3]:
+            print(f"    {runbook.rule_name}  ({len(runbook.markdown):,} chars, "
+                  f"{runbook.rule_type.elastic_type.value})")
+    print()
+    print("  Every runbook is a draft ending at a review checklist. Nothing is created in Kibana.")
 
 
-def _emit_json(sample, fingerprint, gap, candidates, rule_index, rejection, decisions, predictions) -> None:
-    payload = {
-        "sample": {
-            "path": sample.path,
-            "format": sample.format.value,
-            "encoding": sample.encoding,
-            "record_count": sample.record_count,
-            "truncated": sample.truncated,
-            "problems": sample.problems,
-        },
-        "fingerprint": fingerprint.model_dump(mode="json"),
-        "ecs_gap": gap.model_dump(mode="json"),
-        "sigma_corpus_rules": len(rule_index.rules) if rule_index else 0,
-        "candidates": [
-            {
-                **candidate.model_dump(mode="json"),
-                "rule_type": (
-                    decisions[candidate.rule_ref].model_dump(mode="json")
-                    if candidate.rule_ref in decisions else None
-                ),
-                "prediction": (
-                    predictions[candidate.rule_ref].model_dump(mode="json")
-                    if candidate.rule_ref in predictions else None
-                ),
-            }
-            for candidate in candidates
-        ],
-        "rejection_report": rejection.model_dump(mode="json") if rejection else None,
-    }
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
+def _json_payload(result: PipelineResult) -> dict:
+    payload = result.model_dump(mode="json", exclude={"runbooks"})
+    payload["runbooks"] = [
+        {
+            "rule_name": runbook.rule_name,
+            "objective": runbook.objective,
+            "mitre_mapping": runbook.mitre_mapping,
+            "rule_type": runbook.rule_type.elastic_type.value,
+            "markdown_path": runbook.markdown_path,
+            "markdown": runbook.markdown,
+        }
+        for runbook in result.runbooks
+    ]
+    return payload
 
 
 def _clip(text: str, width: int) -> str:
