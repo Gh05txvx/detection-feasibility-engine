@@ -24,6 +24,40 @@ wasting a review cycle. Worth clearing first.
 | 1.2 | **Clean up orphaned jobs at startup.** A server that dies mid-run leaves the job row at `running` forever and the status page polling forever. Mark `running`/`queued` jobs as failed on boot, with the reason. Already a bug; restarts are about to become frequent. | eng | S |
 | 1.3 | **Confirm the seeded taxonomy against the real Cloudflare WAF file.** The two shipped entries were written from the Cloudflare `firewall_events` field set, not ported from the team's actual 15-category taxonomy, which was not in this repo. Their detection logic is structurally sound but unverified. | you | S |
 | 1.4 | **Confirm the WAF `RuleID` values.** `cloudflare-waf-sqli` scopes its WAF branch to rule ID `100015`, taken from the synthetic fixture. Real managed-rule IDs are ruleset-specific and must be checked against a client's WAF config. | you | S |
+| 1.5 | **Download a single hypothesis as markdown.** See below. | eng | S |
+
+### 1.5 — one card, one markdown file
+
+Both outcomes on the results page already render as cards: match candidates as
+candidate cards, each with its own **Download draft runbook** button, and
+hypotheses on the no-match path as cards carrying the ABLE block, the four
+validation checks, the verdict, and the remediation.
+
+What is missing is the second half of that symmetry. A match candidate exports on
+its own; a hypothesis does not — the only download is the whole report, every
+hypothesis in one file.
+
+That matters for the work about to start. The artifact you hand a client is *one*
+onboarding ask, backed by the reasoning behind it. Sending a five-hypothesis report
+so they can find the relevant page is a worse deliverable, and editing one out by
+hand before sending it is worse still.
+
+To build:
+
+- `render_hypothesis_markdown(report, index)` in `engine/hypothesis/report.py`,
+  reusing the existing per-hypothesis renderer and wrapping it so the file stands
+  alone when it arrives by email: sample name, log source, generated date, the
+  "no automatic match is not the same as not detectable" framing, that
+  hypothesis's own onboarding requirements, and the human-review closing.
+- `GET /jobs/{job_id}/hypothesis/{index}` returning `text/markdown` as an
+  attachment, mirroring the existing `/runbook/{index}` route including its
+  bounds check.
+- A **Download** button on each hypothesis card. Keep the full-report download
+  as well; both are useful.
+- Filename from the behaviour, the way runbooks are named, not `hypothesis-2.md`.
+
+Keep the whole-report download and the per-card download consistent in content:
+the same reasoning, differing only in scope.
 
 ## 2. Closing the four open Definitions of Done
 
