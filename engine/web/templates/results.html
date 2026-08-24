@@ -3,9 +3,8 @@
 {% block content %}
 
 <h1>{{ job.filename }}</h1>
-<p class="muted">
-  Job {{ job.job_id }} &middot; searched
-  {{ result.sigma_corpus_rules }} Sigma rules and
+<p class="subtitle">
+  Job {{ job.job_id }} &middot; searched {{ result.sigma_corpus_rules }} Sigma rules and
   {{ result.taxonomy_entries }} internal taxonomy entr{{ 'y' if result.taxonomy_entries == 1 else 'ies' }}
 </p>
 
@@ -16,85 +15,224 @@
 
 {% if result.candidates %}
 
-<h2>{{ result.candidates | length }} candidate{{ '' if result.candidates | length == 1 else 's' }}</h2>
+<div class="stats">
+  <div class="stat">
+    <span class="value">{{ summary.total }}</span>
+    <span class="label">candidates</span>
+  </div>
+  <div class="stat">
+    <span class="value">{{ summary.sigma }}</span>
+    <span class="label">from Sigma</span>
+  </div>
+  <div class="stat">
+    <span class="value">{{ summary.internal }}</span>
+    <span class="label">from internal taxonomy</span>
+  </div>
+  <div class="stat {% if summary.noisy %}flag{% endif %}">
+    <span class="value">{{ summary.noisy }}</span>
+    <span class="label">flagged noisy</span>
+  </div>
+</div>
 
+<div class="section-head">
+  <h2>Candidates <span class="muted small">(<span id="candidate-count">{{ summary.total }}</span> shown)</span></h2>
+  <input class="filter" type="search" placeholder="Filter by name, technique, type&hellip;"
+         data-filter-target="#candidate-list" data-filter-count="#candidate-count">
+</div>
+
+<div id="candidate-list">
 {% for candidate in result.candidates %}
   {% set decision = result.rule_types.get(candidate.rule_ref) %}
   {% set forecast = result.predictions.get(candidate.rule_ref) %}
-  <article class="candidate">
-    <h3>
-      <span class="score">{{ '%.2f' % candidate.confidence }}</span>
-      {{ candidate.title }}
-    </h3>
-    <p class="muted">
-      <code>{{ candidate.rule_ref }}</code>
-      &middot; {{ candidate.source.value }}
-      {%- if candidate.level %} &middot; level {{ candidate.level }}{% endif %}
-      {%- if candidate.mitre_techniques %} &middot; {{ candidate.mitre_techniques | join(', ') }}{% endif %}
-    </p>
-
-    {% if decision %}
-    <p>
-      <span class="pill pill-type">{{ decision.elastic_type.value }}</span>
-      {%- if decision.alternatives %}
-      <span class="muted">also possible:
-        {%- for alternative in decision.alternatives %} {{ alternative.value }}{% endfor %}</span>
-      {%- endif %}
-    </p>
-    <p class="reason">{{ decision.reasoning }}</p>
-    {% for caveat in decision.caveats %}
-    <p class="warn">Caveat: {{ caveat }}</p>
-    {% endfor %}
-    {% endif %}
-
-    <p class="reason">{{ candidate.reasoning }}</p>
-    {% for assumption in candidate.assumptions %}
-    <p class="note">Assumes: {{ assumption }}</p>
-    {% endfor %}
+  <article class="candidate"
+           data-filter-text="{{ (candidate.title ~ ' ' ~ candidate.rule_ref ~ ' ' ~ candidate.source.value ~ ' ' ~ (candidate.mitre_techniques | join(' ')) ~ ' ' ~ (decision.elastic_type.value if decision else '')) | lower }}">
+    <div class="candidate-head">
+      <span class="rank">{{ loop.index }}</span>
+      <div class="title">
+        <h3>{{ candidate.title }}</h3>
+        <p class="subtitle"><code>{{ candidate.rule_ref }}</code></p>
+        <div class="tags">
+          {% if candidate.source.value == 'internal_taxonomy' %}
+            <span class="badge info">internal taxonomy</span>
+          {% else %}
+            <span class="badge neutral">sigma</span>
+          {% endif %}
+          {% if decision %}<span class="badge info">{{ decision.elastic_type.value }}</span>{% endif %}
+          {% if candidate.level %}<span class="badge neutral">{{ candidate.level }}</span>{% endif %}
+          {% for technique in candidate.mitre_techniques %}<span class="chip">{{ technique }}</span>{% endfor %}
+          {% if candidate.missing_fields %}
+            <span class="badge bad">missing {{ candidate.missing_fields | length }} field{{ '' if candidate.missing_fields | length == 1 else 's' }}</span>
+          {% endif %}
+        </div>
+      </div>
+      <div class="score-block">
+        <span class="score">{{ '%.2f' % candidate.confidence }}</span>
+        <span class="meter {% if candidate.confidence >= 0.75 %}ok{% elif candidate.confidence >= 0.5 %}warn{% else %}bad{% endif %}"><span style="width: {{ (candidate.confidence * 100) | round | int }}%"></span></span>
+        {% if forecast %}
+        <div style="margin-top:0.35rem">
+          <span class="badge {% if forecast.confidence_tier.value == 'high' %}ok{% elif forecast.confidence_tier.value == 'medium' %}warn{% else %}bad{% endif %}">tier {{ forecast.confidence_tier.value }}</span>
+        </div>
+        {% endif %}
+      </div>
+    </div>
 
     {% if forecast %}
       {% set bt = forecast.backtest %}
       <p class="backtest">
         {% if bt.evaluated %}
-          <b>{{ bt.matched_events }}</b> of {{ bt.total_events }} sample events match
-          ({{ '%.1f' % (bt.match_rate * 100) }}%)
-          {%- if bt.alerts != bt.matched_events %}, <b>{{ bt.alerts }}</b> alert(s) after aggregation{% endif %}
+          <strong>{{ bt.matched_events }}</strong> of {{ bt.total_events }} sample events match
+          <span class="muted">({{ '%.1f' % (bt.match_rate * 100) }}%)</span>
+          {%- if bt.alerts != bt.matched_events %}, <strong>{{ bt.alerts }}</strong> alert(s) after aggregation{% endif %}
           {%- if forecast.projection_basis != 'not projectable' %}
-            &rarr; ~{{ '%.1f' % forecast.estimated_alert_volume }} alerts/day
+            &rarr; <strong>~{{ '%.1f' % forecast.estimated_alert_volume }}</strong> alerts/day
           {%- endif %}
+          {%- if forecast.noisy %} <span class="badge bad">noisy</span>{% endif %}
         {% else %}
-          Not backtested.
+          <span class="muted">Not backtested &mdash; {{ bt.unsupported_reason }}</span>
         {% endif %}
-        <span class="pill pill-tier-{{ forecast.confidence_tier.value }}">
-          tier {{ forecast.confidence_tier.value }}</span>
-        {%- if forecast.noisy %} <span class="pill pill-failed">noisy</span>{% endif %}
       </p>
-      <p class="muted small">{{ forecast.notes }}</p>
     {% endif %}
 
-    {% for runbook in result.runbooks %}
-      {% if runbook.match_candidate.rule_ref == candidate.rule_ref %}
-      <p><a class="button" href="/jobs/{{ job.job_id }}/runbook/{{ loop.index0 }}">Download draft runbook</a></p>
-      {% endif %}
-    {% endfor %}
+    <details class="disclosure">
+      <summary>Why this matched, and what it assumes</summary>
+      <div class="body">
+        {% if decision %}
+        <p><strong>Rule type.</strong> {{ decision.reasoning }}</p>
+        {% if decision.alternatives %}
+        <p class="muted">Also expressible as
+          {% for alternative in decision.alternatives %}<code>{{ alternative.value }}</code>{% if not loop.last %}, {% endif %}{% endfor %};
+          the simplest sufficient type was chosen.</p>
+        {% endif %}
+        {% for caveat in decision.caveats %}
+        <p><span class="badge warn">caveat</span> {{ caveat }}</p>
+        {% endfor %}
+        {% endif %}
+
+        <p><strong>Match.</strong> {{ candidate.reasoning }}</p>
+
+        {% for assumption in candidate.assumptions %}
+        <p><span class="badge neutral">assumes</span> {{ assumption }}</p>
+        {% endfor %}
+
+        {% if forecast %}<p class="muted">{{ forecast.notes }}</p>{% endif %}
+        {% if candidate.rule_path %}<p class="muted"><code>{{ candidate.rule_path }}</code></p>{% endif %}
+      </div>
+    </details>
+
+    {% if candidate.rule_ref in runbook_index %}
+    <div class="actions">
+      <a class="button ghost small" href="/jobs/{{ job.job_id }}/runbook/{{ runbook_index[candidate.rule_ref] }}">
+        Download draft runbook
+      </a>
+    </div>
+    {% endif %}
   </article>
 {% endfor %}
+</div>
 
-<p class="note">
-  Every candidate above is a draft for review. Rule type, predicted volume and the runbook
-  are recommendations produced from one sample; none of it is created in Kibana.
-</p>
+<blockquote class="callout">
+  <p>
+    Every candidate above is a draft for review. Rule type, predicted volume and the
+    runbook are recommendations produced from one sample; nothing is created in Kibana.
+  </p>
+</blockquote>
 
 {% else %}
 
+{% set report = result.rejection %}
+
 <h2>No match</h2>
-<p class="lede">
-  No rule in the Sigma corpus and no internal taxonomy entry is satisfiable by this sample.
-  That is not the same as &ldquo;not detectable&rdquo;. The hypothesis module below says what
-  the data would need to support detection, and what to ask the client for.
-</p>
-<p><a class="button" href="/jobs/{{ job.job_id }}/report">Download the rejection report</a></p>
-<pre class="report">{{ rejection_markdown }}</pre>
+<blockquote class="callout warn">
+  <p>
+    <strong>No automatic match is not the same as not detectable.</strong>
+    No rule in the Sigma corpus and no internal taxonomy entry is satisfiable by this
+    sample. What follows is what the data would need to support detection, and what to
+    ask the client for.
+  </p>
+</blockquote>
+
+{% if report %}
+<div class="stats">
+  <div class="stat">
+    <span class="value">{{ report.reports | length }}</span>
+    <span class="label">hypotheses evaluated</span>
+  </div>
+  <div class="stat bad">
+    <span class="value">{{ report.rejected | length }}</span>
+    <span class="label">rejected</span>
+  </div>
+  <div class="stat good">
+    <span class="value">{{ report.feasible | length }}</span>
+    <span class="label">feasible, no rule exists</span>
+  </div>
+  <div class="stat flag">
+    <span class="value">{{ report.onboarding_requirements | length }}</span>
+    <span class="label">onboarding requirements</span>
+  </div>
+</div>
+
+<p><a class="button" href="/jobs/{{ job.job_id }}/report">Download the full report</a></p>
+
+<div class="report">
+{% for item in report.reports %}
+  <div class="card">
+    <h3>{{ item.hypothesis.behavior }}</h3>
+    <p class="verdict">
+      {% if item.verdict == 'rejected' %}
+        <span class="badge bad">rejected</span>
+      {% else %}
+        <span class="badge ok">feasible &mdash; no existing rule covers it</span>
+      {% endif %}
+      {% for technique in item.hypothesis.mitre_techniques %}<span class="chip">{{ technique }}</span>{% endfor %}
+      {% if item.hypothesis.implied_rule_type %}<span class="badge info">{{ item.hypothesis.implied_rule_type }}</span>{% endif %}
+    </p>
+
+    <table class="kv">
+      <tr><th>Actor</th><td>{{ item.hypothesis.actor }}</td></tr>
+      <tr><th>Behavior</th><td>{{ item.hypothesis.behavior }}</td></tr>
+      <tr><th>Location</th><td>{{ item.hypothesis.location }}</td></tr>
+      <tr><th>Evidence</th><td>{{ item.hypothesis.evidence }}</td></tr>
+    </table>
+
+    <table style="margin-top:0.7rem">
+      <thead><tr><th style="width:13rem">Validation step</th><th style="width:5rem">Result</th><th>Detail</th></tr></thead>
+      <tbody>
+      {% for check in item.checks %}
+        <tr>
+          <td>{{ step_titles.get(check.name, check.name) }}</td>
+          <td>
+            {%- if check.status.value == 'pass' %}<span class="badge ok">pass</span>
+            {%- elif check.status.value == 'fail' %}<span class="badge bad">fail</span>
+            {%- else %}<span class="badge neutral">n/a</span>{% endif %}
+          </td>
+          <td class="small">{{ check.detail }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+
+    {% if item.remediation %}
+    <p class="note" style="margin-top:0.7rem"><strong>Remediation.</strong> {{ item.remediation }}</p>
+    {% endif %}
+  </div>
+{% endfor %}
+</div>
+
+<h2>Onboarding requirements</h2>
+<div class="card">
+  {% if report.onboarding_requirements %}
+    <p class="muted small" style="margin-top:0">
+      Collected from every failed check above. These are asks for the client or the ingest
+      design, not tuning notes for later.
+    </p>
+    <ol class="requirements">
+    {% for item in report.onboarding_requirements %}<li>{{ item }}</li>{% endfor %}
+    </ol>
+  {% else %}
+    <p style="margin:0">None. Every hypothesis the data category suggests is supportable by this sample.</p>
+  {% endif %}
+</div>
+{% endif %}
 
 {% endif %}
 

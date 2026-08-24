@@ -63,6 +63,15 @@ def test_migrate_resumes_from_an_older_version(tmp_path):
         assert db.migrate(connection) == db.SCHEMA_VERSION
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(taxonomy_entries)")}
         assert "assumptions" in columns
+        job_columns = {row["name"] for row in connection.execute("PRAGMA table_info(job_runs)")}
+        assert "stage" in job_columns
+
+
+def test_migrations_are_listed_in_ascending_order():
+    """Out of order, a later version applied first makes the earlier one unreachable."""
+    versions = [version for version, _ in db.MIGRATIONS]
+
+    assert versions == sorted(versions)
 
 
 def test_upsert_roundtrips_json_columns(conn):

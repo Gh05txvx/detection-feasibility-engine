@@ -36,7 +36,7 @@ from engine.profiling.field_profiler import LogFingerprint
 VERDICT_REJECTED = "rejected"
 VERDICT_FEASIBLE_NO_RULE = "feasible_no_rule"
 
-_STEP_TITLES = {
+STEP_TITLES = {
     "reassess_data_patterns": "Reassess data & patterns",
     "confirm_baselines": "Confirm with baselines",
     "correlate_threat_intel": "Correlate with local threat intel",
@@ -259,7 +259,7 @@ def _render_hypothesis(position: int, report: HypothesisReport) -> list[str]:
 
     lines.extend(["| Validation step | Result | Detail |", "|---|---|---|"])
     for check in report.checks:
-        title = _STEP_TITLES.get(check.name, check.name)
+        title = STEP_TITLES.get(check.name, check.name)
         detail = check.detail.replace("|", "\\|")
         lines.append(f"| {title} | {_STATUS_LABELS[check.status]} | {detail} |")
     lines.append("")

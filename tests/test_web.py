@@ -174,7 +174,10 @@ def test_structure_page_shows_the_fingerprint_and_fields(client):
     assert response.status_code == 200
     assert "cloudflare" in response.text
     assert "ClientRequestQuery" in response.text
-    assert "37 records" in response.text
+    # The record and field counts are stat tiles.
+    assert '<span class="value">37</span>' in response.text
+    assert '<span class="value">19</span>' in response.text
+    assert "records" in response.text
 
 
 def test_results_page_shows_candidates_with_type_and_backtest(client):
@@ -236,6 +239,34 @@ def test_status_fragment_polls_while_running(client):
 
     assert 'hx-trigger="every 1s"' in response.text
     assert client.get(f"/jobs/{job.job_id}/results").status_code == 409
+
+
+def test_status_shows_the_stage_the_run_has_reached(client):
+    """A wait long enough to matter deserves more than a spinner."""
+    from engine import pipeline
+
+    with db.connection() as conn:
+        job = job_store.create(conn, "pending.csv")
+        job_store.mark_running(conn, job.job_id)
+        job_store.set_stage(conn, job.job_id, pipeline.STAGES[2])
+
+    response = client.get(f"/jobs/{job.job_id}/status")
+
+    for stage in pipeline.STAGES:
+        assert stage in response.text
+    # Earlier stages read as done, the recorded one as current.
+    assert response.text.index('class="done"') < response.text.index('class="current"')
+
+
+def test_finished_job_records_every_stage_it_passed(client):
+    _seed_taxonomy()
+    from engine import pipeline
+
+    job_id = _upload(client, CLOUDFLARE).headers["location"].rsplit("/", 1)[-1]
+
+    with db.connection() as conn:
+        job = job_store.get(conn, job_id)
+    assert job.stage == pipeline.STAGES[-1]
 
 
 def test_empty_upload_fails_the_job_with_a_reason(client, tmp_path):

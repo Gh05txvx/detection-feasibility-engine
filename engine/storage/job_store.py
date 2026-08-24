@@ -39,13 +39,17 @@ class JobRecord(BaseModel):
     result_type: str | None = None
     result_path: str | None = None
     error: str | None = None
+    # What the run is doing right now, for the UI to show while it waits.
+    stage: str | None = None
 
     @property
     def finished(self) -> bool:
         return self.status in {JobStatus.DONE, JobStatus.FAILED}
 
 
-_COLUMNS = "job_id, filename, status, created_at, finished_at, result_type, result_path, error"
+_COLUMNS = (
+    "job_id, filename, status, created_at, finished_at, result_type, result_path, error, stage"
+)
 
 
 def new_job_id() -> str:
@@ -73,6 +77,12 @@ def mark_running(conn: sqlite3.Connection, job_id: str) -> None:
         conn.execute(
             "UPDATE job_runs SET status = ? WHERE job_id = ?", (JobStatus.RUNNING.value, job_id)
         )
+
+
+def set_stage(conn: sqlite3.Connection, job_id: str, stage: str) -> None:
+    """Record what the run is doing, so a wait is legible rather than blank."""
+    with transaction(conn):
+        conn.execute("UPDATE job_runs SET stage = ? WHERE job_id = ?", (stage, job_id))
 
 
 def mark_done(

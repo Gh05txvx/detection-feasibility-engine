@@ -4,18 +4,36 @@
      hx-swap="outerHTML"{% endif %}>
 
   {% if job.status.value == 'failed' %}
-    <p class="pill pill-failed">failed</p>
-    <p class="error">{{ job.error or 'No reason was recorded.' }}</p>
-    <p><a href="/">Try another sample</a></p>
+    <div class="card">
+      <p class="verdict"><span class="badge bad">failed</span></p>
+      <p class="error">{{ job.error or 'No reason was recorded.' }}</p>
+      <p><a class="button" href="/">Try another sample</a></p>
+    </div>
+
   {% elif job.status.value == 'done' %}
-    <p class="pill pill-done">done</p>
-    <p><a href="/jobs/{{ job.job_id }}/structure">View the results</a></p>
+    <div class="card">
+      <p class="verdict"><span class="badge ok">done</span></p>
+      <p><a class="button" href="/jobs/{{ job.job_id }}/structure">View the results</a></p>
+    </div>
+
   {% else %}
-    <p class="pill pill-{{ job.status.value }}">{{ job.status.value }}</p>
-    <p class="muted">
-      Profiling fields, matching against the Sigma corpus and internal taxonomy,
-      backtesting candidates. The first run after a corpus refresh rebuilds the
-      indexes and takes about a minute.
+    {% set position = stages.index(job.stage) if job.stage in stages else -1 %}
+    {% set percent = (100 * (position + 1)) // (stages | length) %}
+    <div class="progress">
+      <span style="width: {{ percent }}%"></span>
+    </div>
+    <div class="card">
+      <ol class="stage-list">
+        {% for stage in stages %}
+          <li class="{% if loop.index0 < position %}done{% elif loop.index0 == position %}current{% endif %}">
+            <span class="dot"></span>{{ stage }}
+          </li>
+        {% endfor %}
+      </ol>
+    </div>
+    <p class="hint">
+      The first run after a corpus refresh rebuilds the rule indexes, which takes about
+      a minute. After that a sample of this size takes a few seconds.
     </p>
   {% endif %}
 </div>

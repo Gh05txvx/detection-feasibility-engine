@@ -1,0 +1,7 @@
+{%- if job.status.value == 'done' -%}
+  <span class="badge ok">done</span>
+{%- elif job.status.value == 'failed' -%}
+  <span class="badge bad">failed</span>
+{%- else -%}
+  <span class="badge warn">{{ job.status.value }}</span>
+{%- endif -%}

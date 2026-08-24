@@ -94,7 +94,9 @@ async def job_page(request: Request, job_id: str) -> Response:
     job = _job_or_404(job_id)
     if job.status is JobStatus.DONE:
         return RedirectResponse(f"/jobs/{job_id}/structure", status_code=303)
-    return templates.TemplateResponse(request=request, name="job.html", context={"job": job})
+    return templates.TemplateResponse(
+        request=request, name="job.html", context={"job": job, "stages": pipeline.STAGES}
+    )
 
 
 @router.get("/jobs/{job_id}/status", response_class=HTMLResponse)
@@ -102,7 +104,7 @@ async def job_status(request: Request, job_id: str) -> Response:
     """htmx polls this. When the run finishes, it redirects the browser."""
     job = _job_or_404(job_id)
     response = templates.TemplateResponse(
-        request=request, name="_status.html", context={"job": job}
+        request=request, name="_status.html", context={"job": job, "stages": pipeline.STAGES}
     )
     if job.status is JobStatus.DONE:
         response.headers["HX-Redirect"] = f"/jobs/{job_id}/structure"
@@ -122,11 +124,26 @@ async def structure_page(request: Request, job_id: str) -> Response:
 async def results_page(request: Request, job_id: str) -> Response:
     job = _job_or_404(job_id)
     result = _result_or_404(job)
-    report = rejection_report.render_markdown(result.rejection) if result.rejection else None
     return templates.TemplateResponse(
         request=request,
         name="results.html",
-        context={"job": job, "result": result, "rejection_markdown": report},
+        context={
+            "job": job,
+            "result": result,
+            # Candidate -> position in result.runbooks, so the template does not
+            # have to scan the whole list inside its own loop.
+            "runbook_index": {
+                runbook.match_candidate.rule_ref: index
+                for index, runbook in enumerate(result.runbooks)
+            },
+            "summary": {
+                "total": len(result.candidates),
+                "sigma": sum(1 for c in result.candidates if c.source.value == "sigma"),
+                "internal": sum(1 for c in result.candidates if c.source.value != "sigma"),
+                "noisy": sum(1 for p in result.predictions.values() if p.noisy),
+            },
+            "step_titles": rejection_report.STEP_TITLES,
+        },
     )
 
 
@@ -170,11 +187,15 @@ def run_job(job_id: str, sample_path: str) -> None:
     with db.connection() as conn:
         job_store.mark_running(conn, job_id)
 
+    def record_stage(stage: str) -> None:
+        with db.connection() as conn:
+            job_store.set_stage(conn, job_id, stage)
+
     try:
         with db.connection() as conn:
             entries = taxonomy_store.list_entries(conn)
 
-        result = pipeline.process_log_sample(sample_path, taxonomy=entries)
+        result = pipeline.process_log_sample(sample_path, taxonomy=entries, on_stage=record_stage)
 
         JOB_DIR.mkdir(parents=True, exist_ok=True)
         destination = JOB_DIR / f"{job_id}.json"

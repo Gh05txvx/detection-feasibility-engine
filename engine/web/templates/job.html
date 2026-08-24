@@ -3,7 +3,7 @@
 {% block content %}
 
 <h1>{{ job.filename }}</h1>
-<p class="muted">Job {{ job.job_id }} &middot; started {{ job.created_at }}</p>
+<p class="subtitle">Job {{ job.job_id }} &middot; started {{ job.created_at }}</p>
 
 {% include "_status.html" %}
 

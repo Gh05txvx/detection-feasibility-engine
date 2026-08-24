@@ -6,29 +6,37 @@
 
 {% if jobs %}
 <p class="lede">Every sample assessed on this machine. Results survive a server restart.</p>
-<table>
-  <thead>
-    <tr><th>Sample</th><th>Started</th><th>Finished</th><th>Status</th><th>Outcome</th></tr>
-  </thead>
-  <tbody>
-  {% for job in jobs %}
-    <tr>
-      <td><a href="/jobs/{{ job.job_id }}">{{ job.filename }}</a></td>
-      <td class="muted">{{ job.created_at }}</td>
-      <td class="muted">{{ job.finished_at or '' }}</td>
-      <td><span class="pill pill-{{ job.status.value }}">{{ job.status.value }}</span></td>
-      <td>
-        {%- if job.result_type == 'runbook' %}candidates found
-        {%- elif job.result_type == 'rejection_report' %}no match, reasoned
-        {%- elif job.error %}<span class="error">{{ job.error }}</span>
-        {%- endif %}
-      </td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
+
+<div class="section-head">
+  <h2>{{ jobs | length }} run{{ '' if jobs | length == 1 else 's' }}
+      <span class="muted small">(<span id="run-count">{{ jobs | length }}</span> shown)</span></h2>
+  <input class="filter" type="search" placeholder="Filter runs&hellip;"
+         data-filter-target="#run-rows" data-filter-count="#run-count">
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>Sample</th><th>Started</th><th>Finished</th><th>Status</th><th>Outcome</th></tr>
+    </thead>
+    <tbody id="run-rows">
+    {% for job in jobs %}
+      <tr data-filter-text="{{ (job.filename ~ ' ' ~ job.status.value ~ ' ' ~ (job.result_type or '')) | lower }}">
+        <td><a href="/jobs/{{ job.job_id }}">{{ job.filename }}</a></td>
+        <td class="muted small">{{ job.created_at }}</td>
+        <td class="muted small">{{ job.finished_at or '' }}</td>
+        <td>{% include "_job_badge.html" %}</td>
+        <td class="small">{% include "_job_outcome.html" %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% else %}
-<p class="lede">Nothing assessed yet. <a href="/">Start with a sample.</a></p>
+<div class="empty">
+  <p>Nothing assessed yet.</p>
+  <p><a class="button" href="/">Start with a sample</a></p>
+</div>
 {% endif %}
 
 {% endblock %}

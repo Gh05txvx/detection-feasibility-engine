@@ -1,0 +1,9 @@
+{%- if job.result_type == 'runbook' -%}
+  candidates found
+{%- elif job.result_type == 'rejection_report' -%}
+  no match, reasoned
+{%- elif job.error -%}
+  <span class="error">{{ job.error }}</span>
+{%- elif job.stage -%}
+  <span class="muted">{{ job.stage }}</span>
+{%- endif -%}

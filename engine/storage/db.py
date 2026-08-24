@@ -116,6 +116,18 @@ MIGRATIONS: Sequence[tuple[int, Sequence[str]]] = (
             """,
         ),
     ),
+    (
+        3,
+        (
+            # What the job is doing right now, so the UI can say more than
+            # "running". A sample big enough to be worth waiting for is a sample
+            # big enough that a bare spinner is not an answer.
+            """
+            ALTER TABLE job_runs
+                ADD COLUMN stage TEXT
+            """,
+        ),
+    ),
 )
 
 SCHEMA_VERSION = max(version for version, _ in MIGRATIONS)

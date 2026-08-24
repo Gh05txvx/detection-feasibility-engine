@@ -5,13 +5,19 @@
 <p class="lede">
   Drop a raw log sample below. The engine profiles its fields, works out which Elastic
   integration covers it, and reports which detection rules could realistically be built
-  from it &mdash; or, if none can, why not and what is missing.
+  from it &mdash; or, if none can, why not and what to ask the client for.
 </p>
 
 <form id="upload-form" action="/upload" method="post" enctype="multipart/form-data">
   <label id="dropzone" for="file-input">
+    <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+      <path d="M17 8l-5-5-5 5"></path>
+      <path d="M12 3v13"></path>
+    </svg>
     <strong>Drop a CSV, JSON, or JSONL sample here</strong>
-    <span>or click to choose a file</span>
+    <span class="formats">or click to choose a file &middot; also reads an Elasticsearch <code>_search</code> export</span>
     <span id="chosen" class="chosen"></span>
     <input id="file-input" type="file" name="file" accept=".csv,.json,.jsonl,.ndjson,.log,.txt" required>
   </label>
@@ -19,61 +25,31 @@
 </form>
 
 <p class="hint">
-  Accepts a client discovery sample or an Elasticsearch <code>_search</code> export whose
-  fields are not ECS-normalised yet. Matching runs against
-  {{ taxonomy_size }} internal taxonomy entr{{ 'y' if taxonomy_size == 1 else 'ies' }}
-  and the local Sigma corpus.
+  Matching runs against the local Sigma corpus and
+  {{ taxonomy_size }} internal taxonomy entr{{ 'y' if taxonomy_size == 1 else 'ies' }}.
+  Nothing is uploaded anywhere; the file stays on this machine.
 </p>
 
 {% if recent %}
-<h2>Recent runs</h2>
-<table>
-  <thead><tr><th>Sample</th><th>Started</th><th>Status</th></tr></thead>
-  <tbody>
-  {% for job in recent %}
-    <tr>
-      <td><a href="/jobs/{{ job.job_id }}">{{ job.filename }}</a></td>
-      <td class="muted">{{ job.created_at }}</td>
-      <td><span class="pill pill-{{ job.status.value }}">{{ job.status.value }}</span></td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
+<div class="section-head">
+  <h2>Recent runs</h2>
+  <a class="button ghost small" href="/history">All runs</a>
+</div>
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>Sample</th><th>Started</th><th>Status</th><th>Outcome</th></tr></thead>
+    <tbody>
+    {% for job in recent %}
+      <tr>
+        <td><a href="/jobs/{{ job.job_id }}">{{ job.filename }}</a></td>
+        <td class="muted small">{{ job.created_at }}</td>
+        <td>{% include "_job_badge.html" %}</td>
+        <td class="small">{% include "_job_outcome.html" %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% endif %}
-
-<script>
-  // HTML5 drag and drop, wired to the plain file input so the form still works
-  // without any of this.
-  (function () {
-    const zone = document.getElementById('dropzone');
-    const input = document.getElementById('file-input');
-    const chosen = document.getElementById('chosen');
-
-    function show() {
-      chosen.textContent = input.files.length ? input.files[0].name : '';
-    }
-
-    input.addEventListener('change', show);
-
-    ['dragenter', 'dragover'].forEach(function (event) {
-      zone.addEventListener(event, function (e) {
-        e.preventDefault();
-        zone.classList.add('over');
-      });
-    });
-    ['dragleave', 'drop'].forEach(function (event) {
-      zone.addEventListener(event, function (e) {
-        e.preventDefault();
-        zone.classList.remove('over');
-      });
-    });
-    zone.addEventListener('drop', function (e) {
-      if (e.dataTransfer.files.length) {
-        input.files = e.dataTransfer.files;
-        show();
-      }
-    });
-  })();
-</script>
 
 {% endblock %}

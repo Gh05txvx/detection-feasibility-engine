@@ -14,7 +14,7 @@ step; neither writes anything to Elastic.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 from pydantic import BaseModel, Field
 
@@ -37,6 +37,18 @@ from engine.storage.taxonomy_store import TaxonomyEntry
 
 DEFAULT_TOP = 10
 DEFAULT_MIN_CONFIDENCE = 0.4
+
+# The run's stages in order, so a caller waiting on a job can show where it is
+# rather than a spinner. On a first run the corpus indexes rebuild inside
+# "Checking ECS coverage" and "Matching rules", which is most of the minute.
+STAGES: tuple[str, ...] = (
+    "Reading the sample",
+    "Profiling fields",
+    "Checking ECS coverage",
+    "Matching rules",
+    "Backtesting candidates",
+    "Preparing the report",
+)
 
 
 class SampleSummary(BaseModel):
@@ -87,6 +99,7 @@ def process_log_sample(
     rebuild_index: bool = False,
     runbook_dir: str | Path | None = None,
     generate_runbooks: bool = True,
+    on_stage: Callable[[str], None] | None = None,
 ) -> PipelineResult:
     """Run one sample end to end.
 
@@ -94,11 +107,18 @@ def process_log_sample(
     logic over every record, and runbook generation converts rules through
     pySigma. Matching itself still considers the whole corpus.
     """
+    def stage(label: str) -> None:
+        if on_stage is not None:
+            on_stage(label)
+
+    stage(STAGES[0])
     sample = ingestion.parse(path, limit=limit)
 
+    stage(STAGES[1])
     profiles = profile_fields(sample.records, field_names=sample.field_names)
     classification = classify(sample.field_names)
 
+    stage(STAGES[2])
     integration_index = ecs_gap.load_index(integrations_corpus, rebuild=rebuild_index)
     gap = ecs_gap.analyse(profiles, integration_index, product_hint=classification.inferred_product)
 
@@ -109,6 +129,7 @@ def process_log_sample(
         integration_name=gap.integration.name if gap.integration else None,
     )
 
+    stage(STAGES[3])
     entries = list(taxonomy or [])
     rule_index = sigma_matcher.load_rule_index(sigma_corpus, rebuild=rebuild_index)
 
@@ -127,6 +148,8 @@ def process_log_sample(
         for candidate in candidates
     }
 
+    if candidates:
+        stage(STAGES[4])
     predictions: dict[str, PredictionResult] = {}
     runbooks: list[RunbookOutput] = []
     for candidate in candidates[:top]:
@@ -149,6 +172,8 @@ def process_log_sample(
                     out_dir=runbook_dir,
                 )
             )
+
+    stage(STAGES[5])
 
     # BLUEPRINT 5.5: no match is the hypothesis module's path, not a dead end.
     rejection = None
