@@ -241,7 +241,7 @@ def match(
     limit: int | None = None,
 ) -> list[MatchCandidate]:
     """Return the Sigma rules this sample could support, best first."""
-    available = _available_fields(fingerprint)
+    available = fingerprint.resolvable_names()
 
     candidates: list[MatchCandidate] = []
     for rule in index.rules:
@@ -291,25 +291,6 @@ def match(
 
     candidates.sort(key=lambda candidate: (-candidate.confidence, candidate.title))
     return candidates[:limit] if limit else candidates
-
-
-def _available_fields(fingerprint: LogFingerprint) -> dict[str, str]:
-    """Map every name the sample can answer to -> the sample field providing it.
-
-    Includes the raw field name, its last dotted segment, and the ECS field it
-    maps to, so a Sigma rule written in ECS or in vendor terms both resolve.
-    """
-    available: dict[str, str] = {}
-    for profile in fingerprint.profiles:
-        name = profile.field_name
-        available.setdefault(name.lower(), name)
-        if "." in name:
-            available.setdefault(name.rsplit(".", 1)[-1].lower(), name)
-        ecs_field = name if profile.is_ecs_compliant else profile.suggested_ecs_field
-        if ecs_field:
-            available.setdefault(ecs_field.lower(), name)
-            available.setdefault(ecs_field.rsplit(".", 1)[-1].lower(), name)
-    return available
 
 
 def _field_availability(

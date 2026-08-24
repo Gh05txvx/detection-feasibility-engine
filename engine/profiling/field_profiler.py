@@ -69,6 +69,25 @@ class LogFingerprint(BaseModel):
                 return profile
         return None
 
+    def resolvable_names(self) -> dict[str, str]:
+        """Every lowercased name this sample answers to -> the field providing it.
+
+        Includes each raw field name, its last dotted segment, and the ECS field
+        it maps to. This is what lets a rule written in ECS terms and a taxonomy
+        entry written in vendor terms both resolve against the same sample.
+        """
+        names: dict[str, str] = {}
+        for profile in self.profiles:
+            name = profile.field_name
+            names.setdefault(name.lower(), name)
+            if "." in name:
+                names.setdefault(name.rsplit(".", 1)[-1].lower(), name)
+            ecs_field = name if profile.is_ecs_compliant else profile.suggested_ecs_field
+            if ecs_field:
+                names.setdefault(ecs_field.lower(), name)
+                names.setdefault(ecs_field.rsplit(".", 1)[-1].lower(), name)
+        return names
+
 
 def profile_fields(
     records: Sequence[LogRecord],

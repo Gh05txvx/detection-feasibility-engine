@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -165,3 +166,28 @@ def delete(conn: sqlite3.Connection, slug: str) -> bool:
     with transaction(conn):
         cursor = conn.execute("DELETE FROM taxonomy_entries WHERE slug = ?", (slug,))
     return cursor.rowcount > 0
+
+
+def load_entries_from_json(path: str | Path) -> list[TaxonomyEntry]:
+    """Parse and validate a taxonomy file, failing loudly on a bad entry.
+
+    The file format is ``{"entries": [...]}``, optionally with any other
+    top-level keys for human notes. Shared by the setup-time seeder and the
+    authoring workflow so both reject the same mistakes.
+    """
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    raw_entries = payload.get("entries", [])
+    if not raw_entries:
+        raise ValueError(f"{path} has no 'entries'")
+    return [TaxonomyEntry(**raw) for raw in raw_entries]
+
+
+def dump_entries_to_json(entries: list[TaxonomyEntry], *, source: str = "") -> str:
+    """Render entries back to the seed-file format, for export and review."""
+    payload = {
+        "source": source or "Exported from the internal taxonomy database.",
+        "entries": [
+            entry.model_dump(exclude={"id", "created_at", "updated_at"}) for entry in entries
+        ],
+    }
+    return json.dumps(payload, indent=2, ensure_ascii=False)

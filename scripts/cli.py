@@ -19,13 +19,16 @@ from typing import Sequence
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from engine.classification import rule_type_classifier  # noqa: E402
+from engine.classification.rule_type_classifier import RuleTypeDecision  # noqa: E402
 from engine.hypothesis import report as rejection_report  # noqa: E402
 from engine.ingestion import parser as ingestion  # noqa: E402  (needs sys.path set first)
-from engine.matching import sigma_matcher  # noqa: E402
+from engine.matching import sigma_matcher, taxonomy_matcher  # noqa: E402
 from engine.matching.candidate import MatchCandidate  # noqa: E402
 from engine.profiling import ecs_gap  # noqa: E402
 from engine.profiling.data_classifier import classify  # noqa: E402
 from engine.profiling.field_profiler import LogFingerprint, build_fingerprint, profile_fields  # noqa: E402
+from engine.storage.taxonomy_store import TaxonomyEntry  # noqa: E402
 
 RULE = "-" * 78
 
@@ -55,9 +58,23 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     _status("loading sigma rule index (first run builds it, ~30 s)...", args)
     rule_index = sigma_matcher.load_rule_index(args.sigma_corpus, rebuild=args.rebuild_index)
+    # The two matching sources run in parallel, not as fallbacks (BLUEPRINT 5.3).
+    entries = _taxonomy_entries()
     candidates: list[MatchCandidate] = []
     if rule_index is not None:
-        candidates = sigma_matcher.match(fingerprint, rule_index, min_confidence=args.min_confidence)
+        candidates += sigma_matcher.match(fingerprint, rule_index, min_confidence=args.min_confidence)
+    candidates += taxonomy_matcher.match(fingerprint, entries, min_confidence=args.min_confidence)
+    candidates.sort(key=lambda candidate: (-candidate.confidence, candidate.title))
+
+    entries_by_slug = {entry.slug: entry for entry in entries}
+    decisions = {
+        candidate.rule_ref: rule_type_classifier.classify(
+            candidate,
+            fingerprint,
+            taxonomy_entry=entries_by_slug.get(candidate.rule_ref.removeprefix("internal:")),
+        )
+        for candidate in candidates
+    }
 
     # NO MATCH is the hypothesis module's path, not a dead end (BLUEPRINT 5.5).
     rejection = None
@@ -67,7 +84,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             fingerprint,
             records=sample.records,
             sigma_index=rule_index,
-            taxonomy_techniques=_taxonomy_techniques(),
+            taxonomy_techniques={
+                technique for entry in entries for technique in entry.mitre_techniques
+            },
         )
 
     markdown = rejection_report.render_markdown(rejection) if rejection else None
@@ -77,14 +96,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         out_path.write_text(markdown, encoding="utf-8")
 
     if args.json:
-        _emit_json(sample, fingerprint, gap, candidates, rule_index, rejection)
+        _emit_json(sample, fingerprint, gap, candidates, rule_index, rejection, decisions)
         return 0
 
     _report_sample(sample)
     _report_fingerprint(fingerprint)
     _report_fields(fingerprint)
     _report_ecs_gap(gap)
-    _report_candidates(candidates, rule_index, fingerprint, args.top)
+    _report_candidates(candidates, rule_index, fingerprint, args.top, decisions, len(entries))
     if markdown:
         print()
         print(RULE)
@@ -97,21 +116,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def _taxonomy_techniques() -> set[str]:
-    """MITRE techniques the internal taxonomy already covers, if the db exists."""
+def _taxonomy_entries() -> list[TaxonomyEntry]:
+    """Load the internal taxonomy, if the database has been created."""
     try:
         from engine.storage import db, taxonomy_store
 
         if not db.DEFAULT_DB_PATH.exists():
-            return set()
+            return []
         with db.connection() as conn:
-            return {
-                technique
-                for entry in taxonomy_store.list_entries(conn)
-                for technique in entry.mitre_techniques
-            }
-    except Exception:  # noqa: BLE001 - the taxonomy is an enrichment, never a blocker
-        return set()
+            return taxonomy_store.list_entries(conn)
+    except Exception as exc:  # noqa: BLE001 - report, but never block matching
+        print(f"  ... internal taxonomy unavailable ({exc})", file=sys.stderr)
+        return []
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -174,6 +190,11 @@ def _report_fingerprint(fingerprint: LogFingerprint) -> None:
     for line in fingerprint.classification_evidence:
         print(f"  evidence       {line}")
 
+    intel_entities = rule_type_classifier.intel_matchable_entities(fingerprint)
+    if intel_entities:
+        print(f"  intel-matchable  {', '.join(entity.value for entity in intel_entities)}"
+              " -> an Indicator Match rule is possible against this sample")
+
 
 def _report_fields(fingerprint: LogFingerprint) -> None:
     print()
@@ -224,41 +245,59 @@ def _report_candidates(
     rule_index,
     fingerprint: LogFingerprint,
     top: int,
+    decisions: dict[str, RuleTypeDecision],
+    taxonomy_size: int,
 ) -> None:
     print()
     print(RULE)
-    print("SIGMA MATCH CANDIDATES")
+    print("MATCH CANDIDATES")
     print(RULE)
 
+    corpus = f"{len(rule_index.rules)} Sigma rules" if rule_index else "Sigma corpus NOT FOUND"
+    if rule_index and rule_index.parse_errors:
+        corpus += f" ({rule_index.parse_errors} unparsable)"
+    print(f"  searched: {corpus}, {taxonomy_size} internal taxonomy entr(ies)")
     if rule_index is None:
-        print("  Sigma corpus not found. Run scripts\\setup.ps1 to clone it.")
-        return
-
-    print(f"  corpus: {len(rule_index.rules)} rules"
-          + (f", {rule_index.parse_errors} unparsable" if rule_index.parse_errors else ""))
+        print("  Run scripts\\setup.ps1 to clone the Sigma corpus.")
 
     if not candidates:
         print()
         print("  NO MATCH. The hypothesis module's rejection report follows.")
         return
 
-    print(f"  {len(candidates)} candidate(s) above the confidence floor; showing {min(top, len(candidates))}")
+    from_sigma = sum(1 for candidate in candidates if candidate.source.value == "sigma")
+    print(f"  {len(candidates)} candidate(s) above the confidence floor "
+          f"({from_sigma} sigma, {len(candidates) - from_sigma} internal); "
+          f"showing {min(top, len(candidates))}")
+
     for position, candidate in enumerate(candidates[:top], start=1):
+        decision = decisions.get(candidate.rule_ref)
         print()
         print(f"  {position:>2}. [{candidate.confidence:.2f}] {candidate.title}")
-        print(f"      {candidate.rule_ref}   level={candidate.level or '?'}")
+        print(f"      {candidate.rule_ref}   source={candidate.source.value}"
+              + (f"   level={candidate.level}" if candidate.level else ""))
         if candidate.rule_path:
             print(f"      {candidate.rule_path}")
         if candidate.mitre_techniques:
             print(f"      mitre: {', '.join(candidate.mitre_techniques)}")
-        print(f"      why: {candidate.reasoning}")
+        if decision:
+            line = f"      rule type: {decision.elastic_type.value}"
+            if decision.alternatives:
+                line += f"   (also possible: {', '.join(t.value for t in decision.alternatives)})"
+            print(line)
+            print(f"        why: {decision.reasoning}")
+            for caveat in decision.caveats:
+                print(f"        caveat: {caveat}")
+        print(f"      match: {candidate.reasoning}")
+        for assumption in candidate.assumptions:
+            print(f"        assumes: {assumption}")
 
     print()
-    print("  Rule type selection (Phase 3), backtest and noise estimate (Phase 4), and the")
-    print("  runbook (Phase 5) are not built yet. Every candidate above still needs analyst review.")
+    print("  Backtest and noise estimate (Phase 4) and the runbook (Phase 5) are not built yet.")
+    print("  Every candidate above still needs analyst review before anything is created in Kibana.")
 
 
-def _emit_json(sample, fingerprint, gap, candidates, rule_index, rejection) -> None:
+def _emit_json(sample, fingerprint, gap, candidates, rule_index, rejection, decisions) -> None:
     payload = {
         "sample": {
             "path": sample.path,
@@ -271,7 +310,16 @@ def _emit_json(sample, fingerprint, gap, candidates, rule_index, rejection) -> N
         "fingerprint": fingerprint.model_dump(mode="json"),
         "ecs_gap": gap.model_dump(mode="json"),
         "sigma_corpus_rules": len(rule_index.rules) if rule_index else 0,
-        "candidates": [candidate.model_dump(mode="json") for candidate in candidates],
+        "candidates": [
+            {
+                **candidate.model_dump(mode="json"),
+                "rule_type": (
+                    decisions[candidate.rule_ref].model_dump(mode="json")
+                    if candidate.rule_ref in decisions else None
+                ),
+            }
+            for candidate in candidates
+        ],
         "rejection_report": rejection.model_dump(mode="json") if rejection else None,
     }
     print(json.dumps(payload, indent=2, ensure_ascii=False))

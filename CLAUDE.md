@@ -57,6 +57,7 @@ See `docs/IMPLEMENTATION_PLAN.md` for what goes in each module file, and its mod
 ```
 scripts\setup.ps1                          # one-time setup: venv, deps, clone corpora
 python scripts\cli.py path\to\sample.csv    # run engine against one sample (Phase 0-5)
+python scripts\taxonomy.py list             # author/inspect the internal taxonomy
 run.bat                                     # launch local web UI (Phase 6 onward)
 pytest                                      # run tests
 ```

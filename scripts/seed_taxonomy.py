@@ -15,7 +15,6 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -24,18 +23,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from engine.storage import db, taxonomy_store  # noqa: E402  (needs sys.path set first)
-from engine.storage.taxonomy_store import TaxonomyEntry  # noqa: E402
+from engine.storage.taxonomy_store import load_entries_from_json  # noqa: E402
 
 DEFAULT_SEED_FILE = REPO_ROOT / "scripts" / "seeds" / "internal_taxonomy.json"
-
-
-def load_seed_file(path: Path) -> list[TaxonomyEntry]:
-    """Parse and validate a seed file, failing loudly on a bad entry."""
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    raw_entries = payload.get("entries", [])
-    if not raw_entries:
-        raise ValueError(f"{path} has no 'entries'")
-    return [TaxonomyEntry(**raw) for raw in raw_entries]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -51,7 +41,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     try:
-        entries = load_seed_file(seed_file)
+        entries = load_entries_from_json(seed_file)
     except Exception as exc:  # noqa: BLE001 - surface any parse/validation error verbatim
         print(f"invalid seed file {seed_file}: {exc}", file=sys.stderr)
         return 1

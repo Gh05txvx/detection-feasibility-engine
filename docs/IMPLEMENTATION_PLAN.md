@@ -425,12 +425,49 @@ Design notes:
 ### Phase 3 — Rule type classifier + internal taxonomy
 **Objective:** complete the MATCH path with a proper Elastic rule-type recommendation, and extend matching past Sigma's public coverage.
 
-- [ ] `engine/matching/taxonomy_matcher.py` — query the internal taxonomy table
-- [ ] A minimal taxonomy-authoring workflow (a script is fine for now) — taxonomy needs to grow per project, per `docs/BLUEPRINT.md` Section 3
-- [ ] `engine/classification/rule_type_classifier.py` — encode the decision table from `docs/BLUEPRINT.md` Section 5.4 as explicit rules, not a model
+- [x] `engine/matching/taxonomy_matcher.py` — query the internal taxonomy table
+- [x] A minimal taxonomy-authoring workflow (a script is fine for now) — taxonomy needs to grow per project, per `docs/BLUEPRINT.md` Section 3
+- [x] `engine/classification/rule_type_classifier.py` — encode the decision table from `docs/BLUEPRINT.md` Section 5.4 as explicit rules, not a model
 - [ ] Validate rule-type output against a handful of past manual decisions
 
 **Definition of done:** rule-type recommendations for match candidates are consistent with the decisions an analyst would normally make by hand.
+
+**Status: code complete, Definition of Done NOT met (2026-08-24).** The classifier is
+validated against the decision table in `docs/BLUEPRINT.md` 5.4 — all seven rows are
+encoded as test cases — but that is validating the encoding, not the outcome. The DoD
+asks whether the recommendations match what *your analysts* actually decided on past
+projects, and I have none of those cases. **Phase 3 stays open until a handful of real
+past decisions are run through it.** Same blocker as Phase 1.
+
+How the classifier works, and why:
+
+- **Capability-first, not type-first.** Each signal identifies what the detection must
+  be able to *do* — count events, order them, join to an indicator index — and the
+  chosen type is the simplest that provides all of them. This is what the blueprint's
+  "use the simplest sufficient type" means operationally, and it stays stable when two
+  rows of the table both look applicable. `sequence + count` resolves to ES|QL because
+  Threshold cannot order and EQL cannot count.
+- **Signals rank by authority:** the taxonomy entry's detection logic (a declared
+  `aggregation` block *is* a requirement), then the curator's `suggested_rule_type`,
+  then the MITRE technique and sample entity types — which only ever raise
+  *alternatives*, never force a type.
+- **Indicator Match is reported per sample, not per candidate.** Read literally, row 5
+  of the table ("a field holds an entity matchable to threat intel") fires on every rule
+  in any log containing an IP. That is a property of the data, so the CLI states it once
+  under the fingerprint instead of appending it to every candidate.
+- **A taxonomy entry's curated confidence is a ceiling.** A perfect structural match
+  scores no higher than the analyst who wrote the entry was willing to claim.
+
+Taxonomy authoring (`python scripts/taxonomy.py`): `template` → edit → `validate` →
+`import`, plus `list`, `show`, `export`, `delete`. Import upserts by slug, and `export`
+writes the whole taxonomy back in seed-file format so it can be version-controlled or
+handed to another engineer. `validate` also lints for things that parse but disappoint:
+no `required_fields` (feasibility becomes uncheckable), no MITRE technique (the runbook
+gets no ATT&CK mapping), no logsource (the entry matches every sample).
+
+Refactor worth knowing: "which names can this sample answer to" moved onto
+`LogFingerprint.resolvable_names()`, since both matchers need the same ECS bridge and it
+is a property of the fingerprint rather than of either matcher.
 
 ### Phase 4 — Prediction & backtest
 **Objective:** estimate rule performance before it's ever created in Kibana, so noisy candidates get flagged early.

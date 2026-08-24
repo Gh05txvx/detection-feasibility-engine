@@ -34,6 +34,9 @@ class MatchCandidate(BaseModel):
     matched_fields: dict[str, str] = Field(default_factory=dict)
     missing_fields: list[str] = Field(default_factory=list)
     uses_full_text_search: bool = False
+    # Preconditions the detection logic depends on. Carried up from an internal
+    # taxonomy entry, because they are review items, not footnotes.
+    assumptions: list[str] = Field(default_factory=list)
     reasoning: str = ""
 
     @property

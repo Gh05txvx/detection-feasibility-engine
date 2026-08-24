@@ -7,8 +7,8 @@ import sqlite3
 import pytest
 
 from engine.storage import db, taxonomy_store
-from engine.storage.taxonomy_store import TaxonomyEntry
-from scripts.seed_taxonomy import DEFAULT_SEED_FILE, load_seed_file
+from engine.storage.taxonomy_store import TaxonomyEntry, load_entries_from_json
+from scripts.seed_taxonomy import DEFAULT_SEED_FILE
 
 
 @pytest.fixture()
@@ -132,7 +132,7 @@ def test_transaction_rolls_back_on_error(conn):
 
 
 def test_shipped_seed_file_is_valid_and_loadable(conn):
-    entries = load_seed_file(DEFAULT_SEED_FILE)
+    entries = load_entries_from_json(DEFAULT_SEED_FILE)
 
     assert len(entries) >= 2
     assert len({entry.slug for entry in entries}) == len(entries)
