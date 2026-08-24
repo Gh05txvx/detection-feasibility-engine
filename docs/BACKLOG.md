@@ -56,7 +56,7 @@ on the reasoning that a WAF in log-only mode still evidences the attempt. That t
 out to match the team's documented rollout practice — new custom rules run in Log for
 several days before Block — so it is aligned, not accidental.
 | 1.4 | ~~**Confirm the WAF `RuleID` values.**~~ **Done 2026-08-24 — the premise did not hold.** Findings below. | both | done |
-| 1.6 | **Decide how to read the Sentinel export's timestamps.** Their export writes `16/07/2026 20:26:12.030` under a column called `TimeGenerated [Local Time]`. `parse_timestamp` returns None for that, so a real sample gets no time span and no alert-volume projection. Day-first cannot be told from month-first on a single value; it can be inferred across a whole file when any day component exceeds 12, but guessing wrong silently shifts every window, so this needs a decision rather than a quiet fix. | both | S |
+| 1.6 | ~~**Decide how to read the Sentinel export's timestamps.**~~ **Done 2026-08-24.** Decided per column from evidence, refused when the column does not settle it. What was decided and why is below. | both | done |
 
 ### 1.4 — what the confirmation found
 
@@ -129,6 +129,54 @@ Built:
   is the source's problem, not one hypothesis's, so `RejectionReport.ingest_requirements`
   is shared by the combined report and every single-hypothesis export rather than
   living only in the aggregate.
+
+### 1.6 — the decision: read it from the column, refuse when the column is silent
+
+`16/07/2026 20:26:12.030` under `TimeGenerated [Local Time]` was two separate
+problems wearing one coat.
+
+**The format was not recognised at all.** `_ISO_TIME_RE` requires `YYYY-MM-DD`, so a
+slash date fell through to dtype `string`, `find_timestamp_source` never considered
+it, and the engine reported *no timestamp field was found* for a log whose first
+column is a timestamp. That is the same failure the split `date`/`time` work existed
+to stop: the ask that reaches the client is **add an event timestamp**, for data they
+already send. A separator-separated date is now a `date`, or a `timestamp` when it
+carries a clock.
+
+**The order genuinely is ambiguous — sometimes.** The rule adopted:
+
+> Decide day-first vs month-first **across the whole column, never from one value**,
+> and refuse when the column does not settle it.
+
+One value above 12 in the first position proves day-first; one in the second proves
+month-first; both appearing means no single order reads the column, and neither
+appearing means the column proves nothing. The decision is made in `profile_fields`,
+which sees every value, and carried on `FieldProfile.date_order` — not in
+`find_timestamp_source`, which only sees five sampled values and would call a
+settled column ambiguous. `parse_timestamp` will not read a slash date without being
+told the order, so no caller can accidentally get a guess.
+
+Refusing had to stay distinct from *absent*, or it would have recreated the bug at
+the other end. `TimestampSource.is_readable` is that distinction: the source is still
+returned, spans and projections degrade to *not projectable*, and the ask becomes
+**confirm whether the date is day-first or month-first** rather than *add a
+timestamp*. `_contextual_filtering` needed its own branch for the same reason — it
+would otherwise have reported "no sub-minute component" about a value ending
+`.030`, which is false. Nothing parsed; that is not the same as coarse.
+
+**`[Local Time]` was the second finding, and it is not cosmetic.** The column says
+local and carries no offset. Span and windowing are offset-invariant, so nothing
+computed is wrong, but ingest writing it straight to `@timestamp` puts every event
+seven hours off for a WIB site. No offset is invented — it is raised as an ingest
+requirement, on the runbook and in the rejection report's onboarding list.
+
+On the new fixture the readable path now projects from *sample time span* where it
+previously could not project at all; the same file with every day below 13 stays
+*not projectable* and says why. Both carry the offset ask. 290 tests pass.
+
+Left undone deliberately: a 12-hour clock with `AM`/`PM` is not read. It is refused
+rather than misread, and refusal is already reported, so it surfaces as an ask if it
+ever appears.
 
 ## 2. Closing the four open Definitions of Done
 

@@ -33,6 +33,24 @@ _DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _TIME_ONLY_RE = re.compile(r"^\d{1,2}:\d{2}(:\d{2}(\.\d+)?)?$")
 _SECOND_RE = re.compile(r"\d{1,2}:\d{2}:\d{2}")
 _MINUTE_RE = re.compile(r"\d{1,2}:\d{2}")
+# Sentinel, Excel and most non-ISO CSV exports write the date with separators and
+# no fixed component order: `16/07/2026 20:26:12.030`. The four-digit year is
+# required, so this cannot swallow an ISO date.
+_SLASH_DATE_RE = re.compile(
+    r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?:[T ](\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?))?$"
+)
+# A column that says it is local time and carries no offset. `TimeGenerated
+# [Local Time]` is what a Sentinel CSV export writes.
+_LOCAL_TIME_RE = re.compile(r"local\s*time", re.IGNORECASE)
+
+# Which component of a separator-separated date is the day. Decided across a
+# whole column by _slash_date_order, never from a single value.
+DATE_ORDER_DAY_FIRST = "day-first"
+DATE_ORDER_MONTH_FIRST = "month-first"
+DATE_ORDER_AMBIGUOUS = "ambiguous"
+DATE_ORDER_CONTRADICTORY = "contradictory"
+
+_UNREADABLE_DATE_ORDERS = frozenset({DATE_ORDER_AMBIGUOUS, DATE_ORDER_CONTRADICTORY})
 
 
 class FieldProfile(BaseModel):
@@ -49,6 +67,9 @@ class FieldProfile(BaseModel):
     # are what make a profile reviewable by a human.
     top_values: list[tuple[str, int]] = Field(default_factory=list)
     example: str | None = None
+    # For separator-separated dates only (`16/07/2026`): which component is the
+    # day, or that the column does not settle it. None for every other format.
+    date_order: str | None = None
 
 
 class TimestampSource(BaseModel):
@@ -65,10 +86,24 @@ class TimestampSource(BaseModel):
     date_field: str | None = None
     time_field: str | None = None
     granularity: str = "unknown"  # second | minute | day | unknown
+    # Set only when the date uses separators rather than ISO order.
+    date_order: str | None = None
+    # The column says it is local time and carries no UTC offset.
+    declares_local_time: bool = False
 
     @property
     def is_split(self) -> bool:
         return self.date_field is not None and self.time_field is not None
+
+    @property
+    def is_readable(self) -> bool:
+        """Whether an event time can actually be read out of this column.
+
+        False is not the same as "no timestamp". The field is there and it is a
+        timestamp; what is unsettled is which component is the day. The ask for
+        the client differs accordingly: confirm a format, not add a field.
+        """
+        return self.date_order not in _UNREADABLE_DATE_ORDERS
 
     @property
     def fields(self) -> list[str]:
@@ -80,6 +115,43 @@ class TimestampSource(BaseModel):
     def description(self) -> str:
         return " + ".join(self.fields)
 
+    @property
+    def split_requirement(self) -> str | None:
+        """The ask raised by event time arriving spread across two columns."""
+        if not self.is_split:
+            return None
+        return f"combine {self.description} into @timestamp during ingest"
+
+    @property
+    def format_requirements(self) -> list[str]:
+        """Asks raised by how the time is written, rather than how it is spread."""
+        asks: list[str] = []
+        if self.date_order == DATE_ORDER_AMBIGUOUS:
+            asks.append(
+                f"confirm whether the date in {self.description} is day-first or month-first: no "
+                "value in the sample has a day above 12, so both readings fit the whole column "
+                "and the engine will not guess. Until it is confirmed, the sample has no "
+                "measurable time span and alert volume cannot be projected"
+            )
+        elif self.date_order == DATE_ORDER_CONTRADICTORY:
+            asks.append(
+                f"re-export {self.description} in ISO-8601: some rows put a value above 12 first "
+                "and others put one second, so no single day/month order reads the whole column"
+            )
+        if self.declares_local_time:
+            asks.append(
+                f"attach the site's UTC offset to {self.description} during ingest, or convert it "
+                "to UTC: the column is labelled local time and carries no offset, so @timestamp "
+                "would be wrong by that offset"
+            )
+        return asks
+
+    @property
+    def ingest_requirements(self) -> list[str]:
+        """Everything ingest has to settle before this column can drive a rule."""
+        split = self.split_requirement
+        return ([split] if split else []) + self.format_requirements
+
     def resolve(self, fields: Mapping[str, Any]) -> datetime | None:
         """Read the event time out of one record."""
         if self.is_split:
@@ -88,8 +160,8 @@ class TimestampSource(BaseModel):
             if date_value is None or time_value is None:
                 return None
             combined = f"{str(date_value).strip()} {str(time_value).strip()}".strip()
-            return parse_timestamp(combined)
-        return parse_timestamp(fields.get(self.field_name or ""))
+            return parse_timestamp(combined, date_order=self.date_order)
+        return parse_timestamp(fields.get(self.field_name or ""), date_order=self.date_order)
 
 
 class LogFingerprint(BaseModel):
@@ -165,15 +237,20 @@ def profile_fields(
         values = series[~blank].astype(str)
 
         counts = values.value_counts()
+        present = values.tolist()
+        dtype = _infer_dtype(str(column), present)
         profiles.append(
             FieldProfile(
                 field_name=str(column),
-                dtype=_infer_dtype(str(column), values.tolist()),
+                dtype=dtype,
                 cardinality=int(counts.size),
                 null_rate=round(float(blank.mean()), 4),
-                entity_type=detect_entity_type(str(column), values.tolist()),
+                entity_type=detect_entity_type(str(column), present),
                 top_values=[(str(value), int(count)) for value, count in counts.head(top_n).items()],
                 example=str(values.iloc[0]) if not values.empty else None,
+                # Decided here rather than in find_timestamp_source, which only
+                # sees five sampled values; the order needs the whole column.
+                date_order=_slash_date_order(present) if dtype in ("timestamp", "date") else None,
             )
         )
 
@@ -202,7 +279,12 @@ def build_fingerprint(
     )
 
 
-def parse_timestamp(value: Any, *, allow_date_only: bool = False) -> datetime | None:
+def parse_timestamp(
+    value: Any,
+    *,
+    allow_date_only: bool = False,
+    date_order: str | None = None,
+) -> datetime | None:
     """Parse an event timestamp, accepting ISO-8601 and epoch seconds/millis.
 
     Naive timestamps are read as UTC. Log exports rarely carry an offset, and
@@ -212,12 +294,22 @@ def parse_timestamp(value: Any, *, allow_date_only: bool = False) -> datetime | 
     ``2026-04-02`` into midnight, which would collapse every event in a
     date-only column onto the same instant and quietly produce a zero-length
     sample span. Callers that genuinely mean a date pass ``allow_date_only``.
+
+    A separator-separated date (``16/07/2026 20:26:12.030``) is read only when
+    ``date_order`` says which component is the day. That is a property of the
+    column rather than of one value, so it is decided once by
+    :func:`_slash_date_order` and passed in; without it the value is refused
+    rather than guessed at.
     """
     if value is None:
         return None
     text = str(value).strip()
     if not text:
         return None
+
+    slash = _SLASH_DATE_RE.match(text)
+    if slash is not None:
+        return _parse_slash_date(slash, date_order, allow_date_only=allow_date_only)
 
     if not allow_date_only and _DATE_ONLY_RE.match(text):
         return None
@@ -233,6 +325,67 @@ def parse_timestamp(value: Any, *, allow_date_only: bool = False) -> datetime | 
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
+def _parse_slash_date(
+    match: re.Match[str], date_order: str | None, *, allow_date_only: bool
+) -> datetime | None:
+    """Read one separator-separated date, given the order decided for its column."""
+    if date_order == DATE_ORDER_DAY_FIRST:
+        day, month = match.group(1), match.group(2)
+    elif date_order == DATE_ORDER_MONTH_FIRST:
+        month, day = match.group(1), match.group(2)
+    else:
+        return None
+
+    clock = match.group(4)
+    if clock is None and not allow_date_only:
+        return None
+
+    text = f"{match.group(3)}-{int(month):02d}-{int(day):02d}"
+    if clock:
+        hour, _, rest = clock.partition(":")
+        text += f" {int(hour):02d}:{rest}"
+
+    try:
+        # Constructed without an offset, so the result is always naive: the same
+        # read-as-UTC rule the ISO branch applies.
+        return datetime.fromisoformat(text).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _slash_date_order(values: Sequence[str]) -> str | None:
+    """Decide day-first vs month-first across a whole column, or refuse to.
+
+    Never decided from a single value: ``07/06/2026`` fits both readings. It is
+    decided from the column, where one day above 12 settles it, and refused when
+    the column does not settle it. A wrong guess does not fail loudly — it
+    silently moves every event to another date and shifts every window with it.
+
+    Returns None when the values are not separator-separated dates at all.
+    """
+    first_over_12 = False
+    second_over_12 = False
+    seen = False
+
+    for value in values:
+        match = _SLASH_DATE_RE.match(value.strip())
+        if match is None:
+            return None
+        seen = True
+        first_over_12 = first_over_12 or int(match.group(1)) > 12
+        second_over_12 = second_over_12 or int(match.group(2)) > 12
+
+    if not seen:
+        return None
+    if first_over_12 and second_over_12:
+        return DATE_ORDER_CONTRADICTORY
+    if first_over_12:
+        return DATE_ORDER_DAY_FIRST
+    if second_over_12:
+        return DATE_ORDER_MONTH_FIRST
+    return DATE_ORDER_AMBIGUOUS
+
+
 def find_timestamp_source(profiles: Sequence[FieldProfile]) -> TimestampSource | None:
     """Work out how event time can be read from these fields.
 
@@ -244,7 +397,10 @@ def find_timestamp_source(profiles: Sequence[FieldProfile]) -> TimestampSource |
     for profile in profiles:
         if profile.dtype == "timestamp":
             return TimestampSource(
-                field_name=profile.field_name, granularity=_granularity(profile.example)
+                field_name=profile.field_name,
+                granularity=_granularity(profile.example),
+                date_order=profile.date_order,
+                declares_local_time=_declares_local_time(profile.field_name),
             )
 
     date_profile = next((profile for profile in profiles if profile.dtype == "date"), None)
@@ -254,6 +410,10 @@ def find_timestamp_source(profiles: Sequence[FieldProfile]) -> TimestampSource |
             date_field=date_profile.field_name,
             time_field=time_profile.field_name,
             granularity=_granularity(time_profile.example),
+            # The order was decided on the date column; the time column has none.
+            date_order=date_profile.date_order,
+            declares_local_time=_declares_local_time(date_profile.field_name)
+            or _declares_local_time(time_profile.field_name),
         )
 
     for profile in profiles:
@@ -273,9 +433,15 @@ def _granularity(example: str | None) -> str:
         return "second"
     if _MINUTE_RE.search(example):
         return "minute"
-    if _DATE_ONLY_RE.match(example.strip()):
+    stripped = example.strip()
+    if _DATE_ONLY_RE.match(stripped) or _SLASH_DATE_RE.match(stripped):
         return "day"
     return "unknown"
+
+
+def _declares_local_time(field_name: str | None) -> bool:
+    """Whether the column name itself says the times are local and offsetless."""
+    return bool(field_name and _LOCAL_TIME_RE.search(field_name))
 
 
 def _ordered_columns(columns: Iterable[Any], field_names: Sequence[str] | None) -> list[Any]:
@@ -320,6 +486,12 @@ def _infer_dtype(field_name: str, values: Sequence[str]) -> str:
         return "date"
     if all(_TIME_ONLY_RE.match(value.strip()) for value in values):
         return "time"
+    # A separator-separated date is still a date, whether or not it can be read;
+    # calling it a string would make the engine ask a client to add a timestamp
+    # field they already send.
+    slash_dates = [_SLASH_DATE_RE.match(value.strip()) for value in values]
+    if all(match is not None for match in slash_dates):
+        return "timestamp" if all(match.group(4) for match in slash_dates) else "date"
     if all(_INT_RE.match(value.strip()) for value in values):
         # A 10 or 13 digit integer in a time-ish field is epoch seconds/millis.
         if _TIME_NAME_RE.search(field_name) and all(len(value.strip()) in (10, 13) for value in values):

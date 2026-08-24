@@ -564,13 +564,16 @@ def analyse(
     _add_notes(report, match, index)
 
     source = find_timestamp_source(profiles)
-    if source is not None and source.is_split:
-        report.notes.append(
-            f"Event time arrives split across '{source.date_field}' and '{source.time_field}', which "
-            "is how W3C/IIS, FortiGate and many CSV exports write it. The ingest pipeline must "
-            "combine them into @timestamp; until it does, no time-windowed rule can be built and "
-            "alert volume cannot be projected."
-        )
+    if source is not None:
+        if source.is_split:
+            report.notes.append(
+                f"Event time arrives split across '{source.date_field}' and '{source.time_field}', which "
+                "is how W3C/IIS, FortiGate and many CSV exports write it. The ingest pipeline must "
+                "combine them into @timestamp; until it does, no time-windowed rule can be built and "
+                "alert volume cannot be projected."
+            )
+        for ask in source.format_requirements:
+            report.notes.append(ask[0].upper() + ask[1:] + ".")
 
     return report
 

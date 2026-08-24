@@ -85,13 +85,12 @@ class RejectionReport(BaseModel):
     def ingest_requirements(self) -> list[str]:
         """Asks about how the data arrives rather than about missing fields.
 
-        The data is there; the ingest design has to join it up. Still an ask, and
-        it applies to every hypothesis drawn from this sample, so it belongs on
-        both the whole report and each single-hypothesis export.
+        The data is there; the ingest design has to join it up, settle how it is
+        written, or anchor it to an offset. Still an ask, and it applies to every
+        hypothesis drawn from this sample, so it belongs on both the whole report
+        and each single-hypothesis export.
         """
-        if self.context.timestamp_needs_combining:
-            return [f"combine {self.context.timestamp_description} into @timestamp during ingest"]
-        return []
+        return list(self.context.timestamp_ingest_requirements)
 
     @property
     def onboarding_requirements(self) -> list[str]:

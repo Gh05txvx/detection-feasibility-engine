@@ -12,6 +12,7 @@ tests/fixtures/*
 !tests/fixtures/fortinet_fortigate_traffic.csv
 !tests/fixtures/iis_w3c_access.csv
 !tests/fixtures/minimal_appliance_syslog.csv
+!tests/fixtures/sentinel_slash_timestamps.csv
 !tests/fixtures/windows_security_logons.csv
 
 # Python

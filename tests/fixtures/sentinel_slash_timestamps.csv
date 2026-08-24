@@ -1,0 +1,17 @@
+TimeGenerated [Local Time],ClientIP,ClientRequestHost,ClientRequestMethod,ClientRequestURI,EdgeResponseStatus,WAFAction,WAFAttackScore
+16/07/2026 20:26:12.030,203.0.113.41,portal.example.test,GET,/index.php?id=1,200,unknown,88
+16/07/2026 20:26:44.117,203.0.113.41,portal.example.test,GET,/search?q=laptop,200,unknown,91
+16/07/2026 20:31:09.522,198.51.100.77,portal.example.test,POST,/api/v1/login,200,unknown,74
+16/07/2026 21:02:37.008,198.51.100.77,portal.example.test,GET,/assets/app.js,200,unknown,99
+16/07/2026 21:15:55.640,192.0.2.198,portal.example.test,GET,/index.php?id=1%20OR%201=1,200,unknown,14
+16/07/2026 21:16:02.311,192.0.2.198,portal.example.test,GET,/index.php?id=1%20UNION%20SELECT,200,unknown,9
+16/07/2026 21:16:48.905,192.0.2.198,portal.example.test,GET,/admin/config.php,403,block,11
+16/07/2026 22:04:13.276,203.0.113.90,portal.example.test,POST,/contact,200,unknown,83
+16/07/2026 22:47:31.884,203.0.113.90,portal.example.test,GET,/favicon.ico,200,unknown,97
+17/07/2026 01:12:06.449,198.51.100.12,portal.example.test,GET,/robots.txt,200,unknown,95
+17/07/2026 03:38:52.170,198.51.100.12,portal.example.test,GET,/sitemap.xml,200,unknown,96
+17/07/2026 06:55:20.733,203.0.113.55,portal.example.test,POST,/api/v1/orders,201,unknown,79
+17/07/2026 09:21:44.061,203.0.113.55,portal.example.test,GET,/api/v1/orders/8812,200,unknown,86
+17/07/2026 11:47:18.598,192.0.2.221,portal.example.test,GET,/../../etc/passwd,404,challenge,17
+17/07/2026 14:30:59.205,203.0.113.7,portal.example.test,GET,/,200,unknown,98
+17/07/2026 18:09:27.842,203.0.113.7,portal.example.test,GET,/pricing,200,unknown,94

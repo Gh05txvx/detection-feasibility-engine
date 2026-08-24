@@ -89,6 +89,10 @@ class SampleContext(BaseModel):
     # True when event time arrives as a date column plus a time column, which
     # the ingest pipeline has to combine before any rule can window events.
     timestamp_needs_combining: bool = False
+    # False when the column is an event time the engine refuses to read, which is
+    # a different finding from having no event time at all.
+    timestamp_readable: bool = True
+    timestamp_ingest_requirements: list[str] = Field(default_factory=list)
     time_span_seconds: float | None = None
     sub_minute_granularity: bool = False
     free_text_field: str | None = None
@@ -101,6 +105,8 @@ def build_context(fingerprint: LogFingerprint, records: Sequence[LogRecord] | No
         record_count=fingerprint.record_count,
         timestamp_description=source.description if source else None,
         timestamp_needs_combining=bool(source and source.is_split),
+        timestamp_readable=source.is_readable if source else True,
+        timestamp_ingest_requirements=source.ingest_requirements if source else [],
         free_text_field=_free_text_field(fingerprint),
     )
 
@@ -229,7 +235,12 @@ def _confirm_baselines(
             f"only {context.record_count} events in the sample, below the {MIN_BASELINE_EVENTS} "
             "a baseline needs"
         )
-    if context.time_span_seconds is None:
+    if context.time_span_seconds is None and not context.timestamp_readable:
+        problems.append(
+            f"the sample's time span could not be determined: the date order in "
+            f"{context.timestamp_description} is unsettled, so no event can be placed on a timeline"
+        )
+    elif context.time_span_seconds is None:
         problems.append("the sample's time span could not be determined")
     elif context.time_span_seconds < MIN_BASELINE_SPAN_SECONDS:
         problems.append(
@@ -347,6 +358,14 @@ def _contextual_filtering(
         # Same wording as the evidence requirement's label, so the report's
         # onboarding list asks for it once rather than twice in two phrasings.
         missing.append("event timestamp")
+    elif not context.timestamp_readable:
+        # Not a granularity problem: 16/07/2026 20:26:12.030 has sub-second
+        # precision. Nothing parsed, so claiming coarse timestamps would be wrong.
+        problems.append(
+            f"{context.timestamp_description} carries an event time the engine will not read: its "
+            "day/month order is unsettled, so events cannot be ordered or windowed"
+        )
+        missing.append("a confirmed timestamp format")
     elif not context.sub_minute_granularity and rule_type in _RULE_TYPES_NEEDING_CORRELATION:
         problems.append(
             f"timestamps in {context.timestamp_description} have no sub-minute component, too coarse "

@@ -7,11 +7,16 @@ from pathlib import Path
 import pytest
 
 from engine.ingestion import parser
+from engine.ingestion.schemas import LogRecord
 from engine.profiling import ecs_gap
 from engine.profiling.data_classifier import DataCategory, classify
 from engine.profiling.ecs_gap import DataStreamProfile, IntegrationIndex, find_integration
 from engine.profiling.entity_recognition import EntityType, detect_entity_type
 from engine.profiling.field_profiler import (
+    DATE_ORDER_AMBIGUOUS,
+    DATE_ORDER_CONTRADICTORY,
+    DATE_ORDER_DAY_FIRST,
+    DATE_ORDER_MONTH_FIRST,
     FieldProfile,
     build_fingerprint,
     find_timestamp_source,
@@ -24,6 +29,7 @@ CLOUDFLARE = FIXTURES / "cloudflare_waf_firewall_events.csv"
 FORTIGATE = FIXTURES / "fortinet_fortigate_traffic.csv"
 WINDOWS = FIXTURES / "windows_security_logons.csv"
 W3C = FIXTURES / "iis_w3c_access.csv"
+SENTINEL = FIXTURES / "sentinel_slash_timestamps.csv"
 
 
 # --------------------------------------------------------- entity recognition
@@ -180,6 +186,92 @@ def test_w3c_sample_resolves_its_event_time():
     assert all(moment is not None for moment in moments)
     span = (max(moments) - min(moments)).total_seconds()
     assert span == 8145  # 01:02:11 to 03:17:56, the range the fixture covers
+
+
+# --------------------------------------------- slash-separated date ordering
+
+
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        # One day above 12 anywhere in the column settles the whole column.
+        (["16/07/2026 20:26:12.030", "07/06/2026 08:00:00"], DATE_ORDER_DAY_FIRST),
+        (["07/16/2026 20:26:12.030", "06/07/2026 08:00:00"], DATE_ORDER_MONTH_FIRST),
+        # Every value fits both readings, so the column proves nothing.
+        (["07/06/2026 08:00:00", "01/02/2026 09:00:00"], DATE_ORDER_AMBIGUOUS),
+        # Both positions exceed 12 somewhere: no single order reads the column.
+        (["16/07/2026 20:26:12", "07/16/2026 20:26:12"], DATE_ORDER_CONTRADICTORY),
+        # Not slash-dated at all.
+        (["2026-07-16T20:26:12Z"], None),
+        ([], None),
+    ],
+)
+def test_date_order_is_decided_across_the_column(values, expected):
+    profiles = profile_fields([_record({"TimeGenerated": value}) for value in values]) if values else []
+    order = profiles[0].date_order if profiles else None
+    assert order == expected
+
+
+def test_an_ambiguous_date_order_is_refused_rather_than_guessed():
+    """A wrong guess does not fail loudly; it moves events to another date."""
+    assert parse_timestamp("07/06/2026 08:00:00") is None
+    assert parse_timestamp("07/06/2026 08:00:00", date_order=DATE_ORDER_AMBIGUOUS) is None
+    assert parse_timestamp("07/06/2026 08:00:00", date_order=DATE_ORDER_CONTRADICTORY) is None
+
+    day_first = parse_timestamp("07/06/2026 08:00:00", date_order=DATE_ORDER_DAY_FIRST)
+    month_first = parse_timestamp("07/06/2026 08:00:00", date_order=DATE_ORDER_MONTH_FIRST)
+    assert (day_first.month, day_first.day) == (6, 7)
+    assert (month_first.month, month_first.day) == (7, 6)
+
+
+def test_the_sentinel_export_shape_resolves_its_event_time():
+    """16/07/2026 20:26:12.030 under `TimeGenerated [Local Time]`, as exported."""
+    sample = parser.parse(SENTINEL)
+    profiles = profile_fields(sample.records, field_names=sample.field_names)
+    fingerprint = build_fingerprint(profiles, classify(sample.field_names),
+                                    record_count=sample.record_count)
+
+    source = fingerprint.timestamp_source()
+
+    assert source.field_name == "TimeGenerated [Local Time]"
+    assert source.date_order == DATE_ORDER_DAY_FIRST  # 16/07 and 17/07 settle it
+    assert source.is_readable
+    assert source.granularity == "second"
+
+    moments = [source.resolve(record.fields) for record in sample.records]
+    assert all(moment is not None for moment in moments)
+    assert (min(moments).month, min(moments).day) == (7, 16)
+    # 16 Jul 20:26:12.030 to 17 Jul 18:09:27.842
+    assert round((max(moments) - min(moments)).total_seconds(), 3) == 78195.812
+
+
+def test_a_local_time_column_asks_for_its_offset():
+    """The name says local, the value carries no offset: @timestamp would be off."""
+    sample = parser.parse(SENTINEL)
+    profiles = profile_fields(sample.records, field_names=sample.field_names)
+
+    source = find_timestamp_source(profiles)
+
+    assert source.declares_local_time
+    assert any("UTC offset" in ask for ask in source.format_requirements)
+
+
+def test_an_unreadable_timestamp_is_not_reported_as_a_missing_one():
+    """The field is there; the ask is to confirm a format, not to add a column."""
+    profiles = [FieldProfile(field_name="TimeGenerated", dtype="timestamp", cardinality=2,
+                             null_rate=0.0, example="07/06/2026 08:00:00",
+                             date_order=DATE_ORDER_AMBIGUOUS)]
+
+    source = find_timestamp_source(profiles)
+
+    assert source is not None                      # not "no timestamp"
+    assert source.is_readable is False
+    assert source.resolve({"TimeGenerated": "07/06/2026 08:00:00"}) is None
+    assert any("day-first or month-first" in ask for ask in source.ingest_requirements)
+
+
+def _record(fields: dict[str, str]) -> LogRecord:
+    return LogRecord(line=1, fields=fields)
 
 
 # ---------------------------------------------------------- data classifier

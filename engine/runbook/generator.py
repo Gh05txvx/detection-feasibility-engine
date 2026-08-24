@@ -340,6 +340,9 @@ def _render(
             "`@timestamp`, or the rule cannot be time-scoped and its alerts cannot be ordered.",
             "",
         ])
+    if timestamp_source is not None:
+        for ask in timestamp_source.format_requirements:
+            lines.extend([f"**Before ingest:** {ask}.", ""])
 
     if candidate.missing_fields:
         lines.extend([
