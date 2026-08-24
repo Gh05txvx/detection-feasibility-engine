@@ -55,7 +55,44 @@ One thing worth confirming when convenient: the entry's `Action` list includes `
 on the reasoning that a WAF in log-only mode still evidences the attempt. That turns
 out to match the team's documented rollout practice — new custom rules run in Log for
 several days before Block — so it is aligned, not accidental.
-| 1.4 | **Confirm the WAF `RuleID` values.** `cloudflare-waf-sqli` scopes its WAF branch to rule ID `100015`, taken from the synthetic fixture. Real managed-rule IDs are ruleset-specific and must be checked against a client's WAF config. | you | S |
+| 1.4 | ~~**Confirm the WAF `RuleID` values.**~~ **Done 2026-08-24 — the premise did not hold.** Findings below. | both | done |
+| 1.6 | **Decide how to read the Sentinel export's timestamps.** Their export writes `16/07/2026 20:26:12.030` under a column called `TimeGenerated [Local Time]`. `parse_timestamp` returns None for that, so a real sample gets no time span and no alert-volume projection. Day-first cannot be told from month-first on a single value; it can be inferred across a whole file when any day component exceeds 12, but guessing wrong silently shifts every window, so this needs a decision rather than a quiet fix. | both | S |
+
+### 1.4 — what the confirmation found
+
+**There is no `RuleID` to confirm.** The team's production Cloudflare data reaches
+Sentinel as the **HTTP-requests** dataset, not `firewall_events`, and that shape carries
+no rule identifier at all. Its columns are `ClientRequestURI`, `WAFAttackScore`,
+`WAFSQLiAttackScore`, `WAFXSSAttackScore`, `WAFRCEAttackScore` and `WAFAction`.
+
+So `100015` stays a placeholder, now labelled as one on the entry, and the branch it
+scopes is marked as applying only to a `firewall_events`-shaped log. That is the honest
+state: not confirmed, and not confirmable from the data that exists.
+
+What the environment actually discriminates on is the **WAF Attack Score**, which is a
+better signal than a rule ID for this purpose — it is the thing that catches a payload
+fuzzed just enough to miss a managed-rule signature, which is exactly what a
+signature-scoped branch cannot see.
+
+Three things follow, all done:
+
+- **A new entry, `cloudflare-waf-low-attack-score-not-blocked`**, ported from Tier 1 of
+  the team's own two-tier attack-score runbook: score ≤ 20 *and* an action that is not
+  block or challenge, meaning the payload reached the origin. One event is enough,
+  which is the runbook's own judgement. Tier 2 is deliberately absent: it needs ≥5 hits
+  across ≥3 *distinct days* in a rolling window, and the entry format can express a
+  count inside a window but not a count of active days. It stays a Sentinel analytic.
+- **The plan caveat is recorded as an assumption**, because it decides whether the rule
+  is buildable at all: numeric scores are Enterprise-only, Business gets the categorical
+  `WAFAttackScoreClass` instead, and even on Enterprise the field only reaches Sentinel
+  if it was selected when the Logpush job was configured. If the column is missing the
+  query errors rather than returning nothing.
+- **The `cloudflare_http_requests` signature now recognises the score fields**, so this
+  shape classifies at 0.95 confidence instead of scraping by on the generic ones.
+
+A new fixture, `tests/fixtures/cloudflare_http_requests_attackscore.csv`, covers it:
+the entry fires on the four low-score requests that were not blocked and stays quiet on
+the three that Cloudflare had already stopped.
 | 1.5 | ~~**Download a single hypothesis as markdown.**~~ **Done 2026-08-24.** Every hypothesis card has its own **Download this hypothesis** button, alongside the whole-report download. See below for what was built. | eng | done |
 
 ### 1.5 — one card, one markdown file

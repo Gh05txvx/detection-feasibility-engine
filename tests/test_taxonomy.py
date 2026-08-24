@@ -229,6 +229,52 @@ def test_the_ported_patterns_leave_ordinary_traffic_alone(clean):
         assert not re.search(_pattern(slug, field), clean), f"{slug} fired on {clean}"
 
 
+def test_attack_score_entry_fires_only_when_the_payload_was_not_blocked():
+    """Tier 1 of the team's runbook: a low score matters when nothing stopped it."""
+    from engine.ingestion import parser
+    from engine.prediction.backtest import backtest
+    from engine.profiling.data_classifier import classify
+    from engine.profiling.field_profiler import build_fingerprint, profile_fields
+
+    fixture = Path(__file__).parent / "fixtures" / "cloudflare_http_requests_attackscore.csv"
+    sample = parser.parse(fixture)
+    profiles = profile_fields(sample.records, field_names=sample.field_names)
+    fingerprint = build_fingerprint(profiles, classify(sample.field_names),
+                                    record_count=sample.record_count)
+    entries = {e.slug: e for e in taxonomy_store.load_entries_from_json(DEFAULT_SEED_FILE)}
+    candidates = {c.rule_ref: c for c in taxonomy_matcher.match(fingerprint, list(entries.values()))}
+
+    slug = "cloudflare-waf-low-attack-score-not-blocked"
+    assert f"internal:{slug}" in candidates
+
+    result = backtest(candidates[f"internal:{slug}"], sample.records, fingerprint,
+                      taxonomy_entry=entries[slug])
+
+    assert result.evaluated, result.unsupported_reason
+    # Lines 11-14 are score <= 20 with log/allow/skip; 8-10 are score <= 20 but
+    # block/managedChallenge/jschallenge and must stay quiet.
+    assert result.example_lines == [11, 12, 13, 14]
+    assert result.matched_events == 4
+
+
+def test_firewall_event_entries_do_not_claim_an_http_requests_sample():
+    """Different Cloudflare datasets; the logsource service keeps them apart."""
+    from engine.ingestion import parser
+    from engine.profiling.data_classifier import classify
+    from engine.profiling.field_profiler import build_fingerprint, profile_fields
+
+    fixture = Path(__file__).parent / "fixtures" / "cloudflare_http_requests_attackscore.csv"
+    sample = parser.parse(fixture)
+    profiles = profile_fields(sample.records, field_names=sample.field_names)
+    fingerprint = build_fingerprint(profiles, classify(sample.field_names),
+                                    record_count=sample.record_count)
+    entries = taxonomy_store.load_entries_from_json(DEFAULT_SEED_FILE)
+
+    refs = {c.rule_ref for c in taxonomy_matcher.match(fingerprint, entries)}
+
+    assert refs == {"internal:cloudflare-waf-low-attack-score-not-blocked"}
+
+
 def test_ported_entries_find_exactly_the_attacks_in_the_fixture():
     from engine.ingestion import parser
     from engine.prediction.backtest import backtest

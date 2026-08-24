@@ -208,6 +208,15 @@ def test_classifies_fortigate_and_windows():
     assert windows.data_category is DataCategory.AUTHENTICATION_LOGS
 
 
+def test_classifies_the_cloudflare_http_requests_shape():
+    """What actually reaches Sentinel: HTTP requests with WAF attack scores."""
+    fixture = FIXTURES / "cloudflare_http_requests_attackscore.csv"
+    result = classify(parser.parse(fixture).field_names)
+
+    assert (result.inferred_product, result.inferred_service) == ("cloudflare", "http_requests")
+    assert result.confidence >= 0.9
+
+
 def test_unknown_source_gets_no_invented_logsource():
     result = classify(["colA", "colB", "colC"])
 

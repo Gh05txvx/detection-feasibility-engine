@@ -45,7 +45,7 @@
       },
       "assumptions": [
         "ClientRequestQuery is URL-decoded during ingestion. Undecoded, '+' stands in for a space and the \\s in this regex stops matching: on the shipped fixture that costs 1 of 5 SQLi events.",
-        "RuleID scopes the waf_managed_block branch to the SQLi managed rules. Without it the branch fires on every WAF block, SQLi or not. The IDs are ruleset-specific, so confirm them against the client's WAF config during onboarding.",
+        "RuleID scopes the waf_managed_block branch to the SQLi managed rules. Without it the branch fires on every WAF block, SQLi or not. The value here, 100015, is a placeholder from the shipped fixture and has NOT been confirmed against a real ruleset. Checked 2026-08-24: the team's production Cloudflare data reaches Sentinel as the HTTP-requests dataset, which carries no RuleID field at all, so there was nothing to confirm it against. This branch therefore only applies to a firewall_events-shaped log; for the HTTP-requests shape the equivalent discriminator is WAFSQLiAttackScore, and 'cloudflare-waf-low-attack-score-not-blocked' covers that path.",
         "This logic is written for log analysis, keying on ClientRequestPath and ClientRequestQuery separately as Logpush firewall_event delivers them. The team's own Cloudflare custom rules match http.request.uri, path and query combined; if this entry is ever turned into a custom rule, the fields have to be joined.",
         "If deployed as a Cloudflare custom rule rather than an Elastic one: the regex operator 'matches' is Enterprise-plan only, and Cloudflare's engine is RE2, which has no backreferences and no lookaround. This pattern uses neither, so it ports as written."
       ],
@@ -223,6 +223,55 @@
       "source_project": "internal - Cloudflare WAF taxonomy, category 'RCE_CommandInjection'",
       "author": "IMS team",
       "notes": "Confidence is lower than the other two ported patterns because ${...} can still over-match on request bodies even when bounded. Sinks the author recorded as not yet covered: eval(, assert(, base64_decode( (common webshell obfuscation), proc_open(, popen(, Runtime.exec (Java), os.system and subprocess. (Python - the pattern detects the word python as a command but not Python code injection). No explicit reverse-shell indicators either (/bin/bash -i, nc -e, bash -c, 0<&196)."
+    },
+    {
+      "slug": "cloudflare-waf-low-attack-score-not-blocked",
+      "name": "Cloudflare WAF - low attack score request that reached the origin",
+      "description": "A request Cloudflare's ML scored as very likely malicious that was nonetheless not blocked or challenged, so the payload reached the origin server. Ported from the team's own two-tier attack-score runbook; this entry is its Tier 1, where a single event is enough to alert. Attack Score is the signal that catches payloads fuzzed just enough to miss a managed-rule signature, which is precisely what a signature-based entry cannot see.",
+      "logsource_category": "webserver",
+      "logsource_product": "cloudflare",
+      "logsource_service": "http_requests",
+      "data_category": "application_logs",
+      "required_fields": [
+        "ClientIP",
+        "ClientRequestHost",
+        "ClientRequestURI",
+        "WAFAttackScore",
+        "WAFAction"
+      ],
+      "optional_fields": [
+        "WAFSQLiAttackScore",
+        "WAFXSSAttackScore",
+        "WAFRCEAttackScore",
+        "WAFAttackScoreClass",
+        "RayID",
+        "EdgeResponseStatus",
+        "OriginResponseStatus",
+        "ClientCountry",
+        "ClientIPClass"
+      ],
+      "detection_logic": {
+        "low_score": {"WAFAttackScore|lte": 20},
+        "mitigated_by_cloudflare": {
+          "WAFAction": ["block", "challenge", "managedChallenge", "jschallenge", "connectionClose"]
+        },
+        "condition": "low_score and not mitigated_by_cloudflare"
+      },
+      "assumptions": [
+        "The score runs the counter-intuitive way: 1-99 where LOWER means more likely an attack. 20 is the team's threshold and also Cloudflare's own suggested starting point.",
+        "Numeric scores are Enterprise-plan only. On Business the only field is WAFAttackScoreClass, categorical: Clean / Likely clean / Likely attack / Attack. Substitute WAFAttackScoreClass == 'Attack' there. Cloudflare puts 'Likely attack' at 21-50 but does not publish exact class-to-score boundaries, so that substitution is close, not a 1:1 mapping.",
+        "Even on Enterprise the field only reaches Sentinel if it was selected when the Logpush job was set up. If the column is absent from the table entirely, a query referencing it errors rather than returning nothing, so check field existence before running anything against it.",
+        "A record with no WAFAction is treated here as not mitigated, which is the unsafe direction. Absent is not the same as allowed; if the export can omit the field, confirm before trusting the count."
+      ],
+      "mitre_techniques": ["T1190"],
+      "suggested_rule_type": "custom_query",
+      "confidence": 0.8,
+      "false_positives": [
+        "Internal scanners, partner testing, and scheduled pentest windows. The runbook keeps an explicit allowlist for these and ships it empty, so it has to be filled per client before go-live"
+      ],
+      "source_project": "internal - Cloudflare WAF attack-score runbook, Tier 1",
+      "author": "IMS team",
+      "notes": "Severity per the source runbook: Critical when WAFRCEAttackScore is also <= 20, since that indicates RCE reaching the origin; High otherwise. Tier 2 of that runbook is deliberately NOT represented here: it needs at least 5 hits at score <= 20 spread across at least 3 distinct days in a rolling 14-day window, and this entry's aggregation format can express a count inside a window but not a count of distinct active days. Tier 2 stays a Sentinel analytic."
     }
   ]
 }

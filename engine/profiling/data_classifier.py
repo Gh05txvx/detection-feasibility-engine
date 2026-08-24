@@ -93,6 +93,12 @@ SIGNATURES: tuple[LogSourceSignature, ...] = (
         indicative=frozenset({
             "edgestarttimestamp", "edgeresponsestatus", "clientrequestmethod",
             "clientrequesthost", "rayid", "originresponsestatus", "clientcountry",
+            # WAF Attack Score fields, present when the Logpush job selects them.
+            # This is the shape that reaches Sentinel in practice, and it carries
+            # no RuleID at all.
+            "wafattackscore", "wafattackscoreclass", "wafsqliattackscore",
+            "wafxssattackscore", "wafrceattackscore", "wafaction",
+            "clientipclass", "originip",
         }),
     ),
     LogSourceSignature(

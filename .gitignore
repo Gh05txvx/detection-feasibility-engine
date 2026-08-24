@@ -7,6 +7,7 @@ data/
 # ignore it. The failure mode is a missing test file, never a leak.
 # Adding a new *synthetic* fixture: append it below and `git add -f` it.
 tests/fixtures/*
+!tests/fixtures/cloudflare_http_requests_attackscore.csv
 !tests/fixtures/cloudflare_waf_firewall_events.csv
 !tests/fixtures/fortinet_fortigate_traffic.csv
 !tests/fixtures/iis_w3c_access.csv
