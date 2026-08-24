@@ -214,33 +214,53 @@ def _taxonomy_query(entry: TaxonomyEntry, mapping: dict[str, str]) -> str:
     condition = str(entry.detection_logic.get("condition") or " and ".join(blocks))
     condition = condition.split("|")[0].strip()
 
-    query = condition
-    for name, clause in blocks.items():
-        query = re.sub(rf"\b{re.escape(name)}\b", f"({clause})", query)
-
-    # Any block that produced no clause leaves its bare name behind.
+    replacements = {name: f"({clause})" for name, clause in blocks.items()}
     for name in entry.detection_logic:
         if name not in blocks and name not in {"condition", "aggregation"}:
-            query = re.sub(rf"\b{re.escape(name)}\b", "true /* see note */", query)
+            replacements[name] = "true /* see note above */"
 
+    query = _substitute_blocks(condition, replacements)
     return "\n".join([*notes, query]) if notes else query
 
 
-def _kql_clause(field: str, values: Sequence[Any], modifiers: Sequence[str]) -> str:
-    rendered: list[str] = []
-    for value in values:
-        text = str(value)
-        if "contains" in modifiers:
-            rendered.append(f'*{text}*')
-        elif "startswith" in modifiers:
-            rendered.append(f'{text}*')
-        elif "endswith" in modifiers:
-            rendered.append(f'*{text}')
-        else:
-            rendered.append(text)
+def _substitute_blocks(condition: str, replacements: dict[str, str]) -> str:
+    """Replace every block name in one pass.
 
-    quoted = " or ".join(f'"{item}"' for item in rendered)
-    return f"{field}:({quoted})" if len(rendered) > 1 else f"{field}:{quoted}"
+    Substituting block by block re-scans text already inserted, so a block whose
+    name also appears inside another block's rendered values gets replaced a
+    second time, inside the value. One pass cannot do that.
+    """
+    if not replacements:
+        return condition
+    names = sorted(replacements, key=len, reverse=True)
+    pattern = re.compile(r"\b(" + "|".join(re.escape(name) for name in names) + r")\b")
+    return pattern.sub(lambda match: replacements[match.group(0)], condition)
+
+
+# Characters KQL treats as syntax; they have to be escaped in an unquoted value.
+_KQL_SPECIAL = re.compile(r'([\\():<>"*{}\s])')
+
+
+def _kql_clause(field: str, values: Sequence[Any], modifiers: Sequence[str]) -> str:
+    """Render one field's values as KQL.
+
+    Quoting and wildcards are mutually exclusive in KQL: inside a quoted phrase
+    a `*` is a literal asterisk, so a substring match has to be written
+    unquoted with its special characters escaped. An exact match is the other
+    way round -- quote it, and escape the quotes inside.
+    """
+    prefix = "*" if "contains" in modifiers or "endswith" in modifiers else ""
+    suffix = "*" if "contains" in modifiers or "startswith" in modifiers else ""
+    wildcarded = bool(prefix or suffix)
+
+    rendered = [
+        f"{prefix}{_KQL_SPECIAL.sub(r'\\\1', str(value))}{suffix}" if wildcarded
+        else '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+        for value in values
+    ]
+
+    joined = " or ".join(rendered)
+    return f"{field}:({joined})" if len(rendered) > 1 else f"{field}:{joined}"
 
 
 # ----------------------------------------------------------------- rendering

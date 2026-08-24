@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from sigma.rule import SigmaRule
 
@@ -123,6 +125,53 @@ def test_taxonomy_entry_renders_a_kql_draft():
     assert 'Action:("block" or "log")' in runbook.markdown
 
 
+def test_block_name_appearing_in_a_value_does_not_corrupt_the_query():
+    """Substituting block by block re-scans text already inserted."""
+    entry = TaxonomyEntry(
+        slug="test", name="Test entry", confidence=0.8,
+        detection_logic={
+            "waf": {"Action": ["block"]},
+            "block": {"Source": ["firewall"]},
+            "condition": "waf or block",
+        },
+    )
+    candidate = _candidate(source=MatchSource.INTERNAL_TAXONOMY, rule_ref="internal:test", matched_fields={})
+
+    markdown = generate(candidate, _fingerprint(), _decision(), _forecast(), taxonomy_entry=entry).markdown
+    query = markdown.split("```kql")[1].split("```")[0].strip()
+
+    assert query.count("Source:") == 1
+    assert 'Action:"block"' in query
+    assert "Action:(Source:" not in query
+
+
+def test_quotes_inside_a_value_are_escaped():
+    entry = TaxonomyEntry(
+        slug="test", name="Test entry", confidence=0.8,
+        detection_logic={"sel": {"Msg": ['he said "hi"']}, "condition": "sel"},
+    )
+    candidate = _candidate(source=MatchSource.INTERNAL_TAXONOMY, rule_ref="internal:test", matched_fields={})
+
+    markdown = generate(candidate, _fingerprint(), _decision(), _forecast(), taxonomy_entry=entry).markdown
+    query = markdown.split("```kql")[1].split("```")[0].strip()
+
+    assert query == r'(Msg:"he said \"hi\"")'
+
+
+def test_contains_renders_as_an_unquoted_wildcard():
+    """In KQL a `*` inside quotes is a literal asterisk, not a wildcard."""
+    entry = TaxonomyEntry(
+        slug="test", name="Test entry", confidence=0.8,
+        detection_logic={"sel": {"Query|contains": ["union select"]}, "condition": "sel"},
+    )
+    candidate = _candidate(source=MatchSource.INTERNAL_TAXONOMY, rule_ref="internal:test", matched_fields={})
+
+    markdown = generate(candidate, _fingerprint(), _decision(), _forecast(), taxonomy_entry=entry).markdown
+    query = markdown.split("```kql")[1].split("```")[0].strip()
+
+    assert query == r"(Query:*union\ select*)"
+
+
 def test_regex_logic_is_flagged_as_inexpressible_in_kql():
     entry = TaxonomyEntry(
         slug="test", name="Test entry", confidence=0.8,
@@ -224,8 +273,8 @@ def test_writes_a_file_when_given_a_directory(tmp_path):
                        sigma_rule=_sigma_rule(), out_dir=tmp_path)
 
     assert runbook.markdown_path
-    written = tmp_path / f"{runbook.markdown_path.split(chr(92))[-1]}"
-    assert written.exists()
+    written = Path(runbook.markdown_path)
+    assert written.parent == tmp_path
     assert written.read_text(encoding="utf-8") == runbook.markdown
 
 

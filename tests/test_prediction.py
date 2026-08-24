@@ -102,6 +102,37 @@ def test_matching_is_case_insensitive_like_sigma():
     assert result.matched_events == 1
 
 
+def test_sigma_regex_is_case_sensitive_unless_it_says_otherwise():
+    """Sigma's |re is case-sensitive; forcing IGNORECASE makes every regex over-match."""
+    rule = _rule("    selection:\n        cmd|re: 'PowerShell'\n    condition: selection")
+    records = _records([{"cmd": "powershell -enc AAA"}])
+    fingerprint = _fingerprint(records, timestamp_field=None)
+
+    assert backtest(_candidate(), records, fingerprint, sigma_rule=rule).matched_events == 0
+
+    inline = _rule("    selection:\n        cmd|re: '(?i)PowerShell'\n    condition: selection")
+    assert backtest(_candidate(), records, fingerprint, sigma_rule=inline).matched_events == 1
+
+
+def test_regex_dot_does_not_cross_a_newline():
+    rule = _rule("    selection:\n        cmd|re: 'a.b'\n    condition: selection")
+    records = _records([{"cmd": "a\nb"}])
+
+    result = backtest(_candidate(), records, _fingerprint(records, timestamp_field=None), sigma_rule=rule)
+
+    assert result.matched_events == 0
+
+
+def test_taxonomy_regex_is_case_sensitive_too():
+    entry = _entry(detection_logic={"sel": {"cmd|re": "PowerShell"}, "condition": "sel"})
+    records = _records([{"cmd": "powershell -enc AAA"}])
+
+    result = backtest(_candidate(), records, _fingerprint(records, timestamp_field=None),
+                      taxonomy_entry=entry)
+
+    assert result.matched_events == 0
+
+
 def test_runs_a_fieldless_keyword_search_over_the_whole_event():
     rule = _rule("    keywords:\n        - 'UNION SELECT'\n    condition: keywords")
     records = _records([{"a": "hello", "b": "world"}, {"a": "x", "b": "1 union select 2"}])

@@ -266,12 +266,12 @@ def _match_sigma_value(value: Any, actual: str | None, *, keyword: bool) -> bool
         return False
 
     if kind == "SigmaString":
-        pattern = _compiled(_sigma_string_pattern(value))
+        pattern = _compiled_pattern(_sigma_string_pattern(value))
         return bool(pattern.search(actual) if keyword else pattern.fullmatch(actual))
     if kind in {"SigmaNumber", "SigmaBool"}:
         return str(value).strip().lower() == actual.strip().lower()
     if kind == "SigmaRegularExpression":
-        return bool(_compiled(_regex_source(value)).search(actual))
+        return bool(_compiled_regex(_regex_source(value), _regex_flags(value)).search(actual))
     if kind == "SigmaCIDRExpression":
         return _in_cidr(actual, str(getattr(value, "cidr", "")))
     if kind == "SigmaCompareExpression":
@@ -438,7 +438,8 @@ def _match_scalar(expected: Any, actual: str | None, modifiers: Sequence[str]) -
         if modifier == "endswith":
             return haystack.endswith(needle)
         if modifier == "re":
-            return bool(_compiled(wanted).search(actual))
+            # Same rule as Sigma: the pattern's own inline flags decide, not ours.
+            return bool(_compiled_regex(wanted).search(actual))
         if modifier in {"gt", "gte", "lt", "lte"}:
             return _compare_numbers(actual, wanted, modifier)
         raise _Unsupported(f"field modifier '{modifier}' is not implemented")
@@ -647,6 +648,35 @@ def _notes(
 
 
 @lru_cache(maxsize=2048)
-def _compiled(pattern: str) -> re.Pattern[str]:
-    """Sigma string matching is case-insensitive by default."""
+def _compiled_pattern(pattern: str) -> re.Pattern[str]:
+    """A wildcard pattern derived from a Sigma string.
+
+    Case-insensitive, because that is Sigma's default for plain string values.
+    """
     return re.compile(pattern, re.IGNORECASE | re.DOTALL)
+
+
+@lru_cache(maxsize=2048)
+def _compiled_regex(pattern: str, flags: int = 0) -> re.Pattern[str]:
+    """An author-written regular expression, with only the flags it asked for.
+
+    Sigma's `|re` modifier is case-sensitive unless the pattern says otherwise,
+    and `.` is not supposed to cross a newline. Forcing IGNORECASE and DOTALL
+    here, as this used to, makes every regex rule quietly match more than its
+    author wrote -- the worst kind of error in a tool that estimates alert volume.
+    """
+    return re.compile(pattern, flags)
+
+
+def _regex_flags(value: Any) -> int:
+    """Translate a SigmaRegularExpression's declared flags into re flags."""
+    flags = 0
+    for flag in getattr(value, "flags", None) or ():
+        name = getattr(flag, "name", str(flag)).upper()
+        if "IGNORECASE" in name:
+            flags |= re.IGNORECASE
+        elif "MULTILINE" in name:
+            flags |= re.MULTILINE
+        elif "DOTALL" in name:
+            flags |= re.DOTALL
+    return flags

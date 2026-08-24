@@ -37,6 +37,12 @@ from engine.storage.db import REPO_ROOT
 DEFAULT_CORPUS_PATH = REPO_ROOT / "data" / "elastic-integrations"
 DEFAULT_CACHE_PATH = REPO_ROOT / "data" / "integration-index.json"
 
+# Part of the cache key. Bump it whenever the indexer's output changes shape or
+# meaning, otherwise a cache written by an older build stays valid forever: the
+# corpus files have not changed, so the file-count-and-mtime key still matches
+# and the stale index is reused with no sign anything is wrong.
+INDEX_SCHEMA_VERSION = 2
+
 # A field is considered ECS-shaped when its first dotted segment is one of these.
 # Taken from the ECS top-level field sets.
 ECS_ROOTS = frozenset({
@@ -390,7 +396,7 @@ def _package_titles(packages_dir: Path) -> dict[str, str]:
 
 
 def _corpus_fingerprint(corpus: Path) -> str:
-    """Cheap staleness key: how many pipeline files there are and the newest mtime."""
+    """Cache key: the indexer's version, plus the corpus file count and newest mtime."""
     newest = 0.0
     count = 0
     for path in (corpus / "packages").glob("*/data_stream/*/elasticsearch/ingest_pipeline/*.yml"):
@@ -399,7 +405,7 @@ def _corpus_fingerprint(corpus: Path) -> str:
             newest = max(newest, path.stat().st_mtime)
         except OSError:
             continue
-    return f"{count}:{newest:.0f}"
+    return f"v{INDEX_SCHEMA_VERSION}:{count}:{newest:.0f}"
 
 
 # -------------------------------------------------------------------- lookup

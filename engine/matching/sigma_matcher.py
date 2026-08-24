@@ -31,6 +31,11 @@ from engine.storage.db import REPO_ROOT
 DEFAULT_CORPUS_PATH = REPO_ROOT / "data" / "sigma-corpus" / "rules"
 DEFAULT_CACHE_PATH = REPO_ROOT / "data" / "sigma-index.json"
 
+# Part of the cache key, so a cache written by an older indexer is rebuilt
+# rather than reused: the corpus itself has not changed, so a key made only of
+# file count and mtime would still match.
+INDEX_SCHEMA_VERSION = 1
+
 _ATTACK_TECHNIQUE_RE = re.compile(r"^attack\.(t\d{4}(?:\.\d{3})?)$", re.IGNORECASE)
 
 # Sigma's taxonomy field names, mapped to the ECS fields that mean the same
@@ -248,7 +253,7 @@ def _corpus_fingerprint(corpus: Path) -> str:
             newest = max(newest, path.stat().st_mtime)
         except OSError:
             continue
-    return f"{count}:{newest:.0f}"
+    return f"v{INDEX_SCHEMA_VERSION}:{count}:{newest:.0f}"
 
 
 # ------------------------------------------------------------------- matching

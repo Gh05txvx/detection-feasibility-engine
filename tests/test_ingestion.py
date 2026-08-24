@@ -126,6 +126,62 @@ def test_scalar_lists_are_joined_not_dropped(tmp_path):
     assert json.loads(record.fields["nested"]) == [{"x": 1}]
 
 
+def test_duplicate_header_columns_are_kept_apart(tmp_path):
+    """Two columns of the same name collapse in a dict, losing the first silently."""
+    path = tmp_path / "dup.csv"
+    path.write_text("srcip,srcip,dstip\n1.1.1.1,2.2.2.2,3.3.3.3\n", encoding="utf-8")
+
+    sample = parser.parse(path)
+
+    assert sample.field_names == ["srcip", "srcip__2", "dstip"]
+    assert sample.records[0].fields["srcip"] == "1.1.1.1"
+    assert sample.records[0].fields["srcip__2"] == "2.2.2.2"
+    assert any("duplicate header" in problem for problem in sample.problems)
+
+
+def test_blank_header_cells_get_a_name(tmp_path):
+    path = tmp_path / "blank.csv"
+    path.write_text("ip,,port\n1.1.1.1,x,80\n", encoding="utf-8")
+
+    sample = parser.parse(path)
+
+    assert sample.field_names == ["ip", "column_2", "port"]
+    assert sample.records[0].fields["column_2"] == "x"
+
+
+def test_plus_is_not_rewritten_in_a_value_that_was_never_encoded(tmp_path):
+    """A database audit log's `query` column must not have SELECT a+b mangled."""
+    path = tmp_path / "audit.csv"
+    path.write_text("query,user\nSELECT a+b FROM t,budi\n", encoding="utf-8")
+
+    record = parser.parse(path).records[0]
+
+    assert record.fields["query"] == "SELECT a+b FROM t"
+    assert "query" not in record.raw_fields
+
+
+def test_plus_is_decoded_when_the_value_really_is_encoded(tmp_path):
+    path = tmp_path / "web.csv"
+    path.write_text("query\na%3D1+OR+2\n", encoding="utf-8")
+
+    record = parser.parse(path).records[0]
+
+    assert record.fields["query"] == "a=1 OR 2"
+
+
+def test_zero_parseable_records_is_an_error_not_an_empty_sample(tmp_path):
+    path = tmp_path / "broken.json"
+    path.write_text("{ not json at all", encoding="utf-8")
+
+    with pytest.raises(parser.ParseError, match="no records could be parsed"):
+        parser.parse(path)
+
+
+def test_limit_below_one_is_refused():
+    with pytest.raises(parser.ParseError, match="at least 1"):
+        parser.parse(CLOUDFLARE, limit=0)
+
+
 def test_missing_file_raises_parse_error(tmp_path):
     with pytest.raises(parser.ParseError):
         parser.parse(tmp_path / "nope.csv")

@@ -249,6 +249,14 @@ def test_already_ecs_fields_are_left_alone():
     assert profiles[0].suggested_ecs_field is None
 
 
+def test_index_cache_key_includes_the_indexer_version():
+    """Without this, a cache written by an older build is reused forever: the
+    corpus files have not changed, so a count-and-mtime key still matches."""
+    key = ecs_gap._corpus_fingerprint(Path("does-not-exist"))
+
+    assert key.startswith(f"v{ecs_gap.INDEX_SCHEMA_VERSION}:")
+
+
 def test_missing_corpus_is_reported_not_hidden():
     profiles = [FieldProfile(field_name="srcip", dtype="string", cardinality=1, null_rate=0.0)]
 

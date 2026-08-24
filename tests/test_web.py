@@ -71,15 +71,18 @@ def _upload(client: TestClient, path: Path):
 
 
 def test_server_binds_loopback_only():
-    """BLUEPRINT 8.2: on 0.0.0.0 another machine could read the client's raw logs."""
-    assert serve.HOST == "127.0.0.1"
+    """BLUEPRINT 8.2: on any non-loopback address another machine could read the
+    client's raw logs out of this tool."""
+    import ipaddress
 
-    parser_args = serve.main.__doc__ or ""
-    assert "0.0.0.0" not in parser_args
+    assert ipaddress.ip_address(serve.HOST).is_loopback
+
+    # The bind address must not be reachable from argv either.
+    with pytest.raises(SystemExit):
+        serve.main(["--host", "0.0.0.0"])
 
     source = Path(serve.__file__).read_text(encoding="utf-8")
-    assert '"0.0.0.0"' not in source
-    assert "host=HOST" in source
+    assert "host=HOST" in source, "uvicorn must be given the module constant, not a variable"
 
 
 def test_port_check_detects_a_bound_port():
@@ -95,9 +98,8 @@ def test_port_check_detects_a_bound_port():
 
 
 def test_uploaded_filenames_cannot_escape_the_upload_directory():
-    assert routes._safe_filename("../../etc/passwd") == "etc_passwd" or \
-           routes._safe_filename("../../etc/passwd") == "passwd"
-    assert "/" not in routes._safe_filename("a/b/c.csv")
+    assert routes._safe_filename("../../etc/passwd") == "passwd"
+    assert routes._safe_filename("a/b/c.csv") == "c.csv"
     assert "\\" not in routes._safe_filename(r"..\..\windows\system32\x.csv")
     assert routes._safe_filename("") == "sample"
 

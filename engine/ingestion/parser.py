@@ -51,6 +51,8 @@ def parse(path: str | Path, *, limit: int | None = None) -> ParsedSample:
     path = Path(path)
     if not path.exists():
         raise ParseError(f"sample not found: {path}")
+    if limit is not None and limit < 1:
+        raise ParseError(f"limit must be at least 1, got {limit}")
 
     text, encoding = _read_text(path)
     if not text.strip():
@@ -127,6 +129,13 @@ def _parse_csv(path: Path, text: str, encoding: str, limit: int | None) -> Parse
     problems: list[str] = []
     truncated = False
 
+    # Two columns with the same header collapse into one in a dict, silently
+    # discarding the first one's values. Rename instead, and say so.
+    header, renamed = _dedupe_headers(reader.fieldnames)
+    reader.fieldnames = header
+    for note in renamed:
+        _note(problems, f"duplicate header column {note}")
+
     for offset, row in enumerate(reader):
         if limit is not None and len(records) >= limit:
             truncated = True
@@ -147,6 +156,26 @@ def _parse_csv(path: Path, text: str, encoding: str, limit: int | None) -> Parse
         problems=problems,
         truncated=truncated,
     )
+
+
+def _dedupe_headers(fieldnames: Sequence[str | None]) -> tuple[list[str], list[str]]:
+    """Make every column name unique and non-empty, reporting what was renamed."""
+    seen: dict[str, int] = {}
+    header: list[str] = []
+    renamed: list[str] = []
+
+    for index, raw in enumerate(fieldnames):
+        name = (raw or "").strip() or f"column_{index + 1}"
+        if name in seen:
+            seen[name] += 1
+            unique = f"{name}__{seen[name]}"
+            renamed.append(f"{name!r} at position {index + 1} kept as {unique!r}")
+            name = unique
+        else:
+            seen[name] = 1
+        header.append(name)
+
+    return header, renamed
 
 
 def _sniff_delimiter(text: str) -> str:
@@ -287,22 +316,25 @@ def _flatten(obj: dict[str, Any], prefix: str = "") -> dict[str, Any]:
 def _decode_url_value(name: str, value: Any) -> str | None:
     """Return the URL-decoded value, or None when decoding does not apply.
 
-    Applies to fields whose name signals a URL component, and to any value
-    carrying a percent escape. Returns None when decoding changes nothing, so
-    ``raw_fields`` stays empty for ordinary logs.
+    Returns None when decoding changes nothing, so ``raw_fields`` stays empty
+    for ordinary logs.
+
+    The `+`-means-space rule is the dangerous one, because it rewrites a
+    character that is perfectly legal unencoded. It is applied only when the
+    value is demonstrably a query string: it starts with `?`, or it is a
+    query-ish field that also carries a percent escape. Without that guard, a
+    database audit log with a `query` column turns `SELECT a+b` into
+    `SELECT a b` and every later stage sees the corrupted text.
     """
     if not isinstance(value, str) or not value:
         return None
 
-    if not _URL_FIELD_HINT.search(name) and not _PERCENT_ESCAPE.search(value):
+    has_escape = bool(_PERCENT_ESCAPE.search(value))
+    if not _URL_FIELD_HINT.search(name) and not has_escape:
         return None
 
-    # '+' means a space inside a query string only. In a path it is a literal
-    # plus, so unquote_plus would corrupt it.
-    if _QUERY_FIELD_HINT.search(name) or value.startswith("?"):
-        decoded = unquote_plus(value)
-    else:
-        decoded = unquote(value)
+    is_query_string = value.startswith("?") or (has_escape and bool(_QUERY_FIELD_HINT.search(name)))
+    decoded = unquote_plus(value) if is_query_string else unquote(value)
 
     return decoded if decoded != value else None
 

@@ -132,6 +132,12 @@ def test_mitre_techniques_and_reference_are_carried_through():
     assert candidate.rule_ref == "sigma:00000000-0000-0000-0000-000000000001"
 
 
+def test_rule_index_cache_key_includes_the_indexer_version():
+    key = sigma_matcher._corpus_fingerprint(Path("does-not-exist"))
+
+    assert key.startswith(f"v{sigma_matcher.INDEX_SCHEMA_VERSION}:")
+
+
 def test_min_confidence_filters():
     rule = _rule()
 

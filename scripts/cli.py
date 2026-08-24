@@ -209,8 +209,8 @@ def _report_ecs_gap(result: PipelineResult) -> None:
     if gap.unmapped_fields:
         print(f"  unmapped               {len(gap.unmapped_fields)}: {', '.join(gap.unmapped_fields)}")
     for note in gap.notes:
-        for line in textwrap.wrap(note, width=96):
-            print(f"  note: {line}" if line == textwrap.wrap(note, width=96)[0] else f"        {line}")
+        for index, line in enumerate(textwrap.wrap(note, width=96)):
+            print(f"  note: {line}" if index == 0 else f"        {line}")
 
 
 def _report_candidates(result: PipelineResult, top: int) -> None:
