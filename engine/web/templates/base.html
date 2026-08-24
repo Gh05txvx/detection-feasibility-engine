@@ -24,6 +24,16 @@
     </nav>
   </header>
 
+  {#- Guarded with `is defined` on purpose: a server started before this global
+      existed must still render every page, just without the banner. #}
+  {% if engine_is_stale is defined and engine_is_stale() %}
+  <div class="banner">
+    <strong>This server is running older code than what is on disk.</strong>
+    Results may come from the engine as it was when the server started. Stop it with
+    <code>Ctrl+C</code> in the terminal window and run <code>run.bat</code> again.
+  </div>
+  {% endif %}
+
   <main>
     {% block content %}{% endblock %}
   </main>

@@ -35,7 +35,11 @@ def create_app():
     from fastapi.staticfiles import StaticFiles
     from starlette.exceptions import HTTPException as StarletteHTTPException
 
+    from engine.web import staleness
     from engine.web.routes import STATIC_DIR, router
+
+    # Whatever the code looks like right now is what this process is running.
+    staleness.watch.mark_started()
 
     app = FastAPI(
         title="Detection Feasibility Engine",

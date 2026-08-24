@@ -23,6 +23,7 @@ from engine.pipeline import PipelineResult
 from engine.storage import db, job_store, taxonomy_store
 from engine.storage.db import REPO_ROOT
 from engine.storage.job_store import JobRecord, JobStatus, ResultType
+from engine.web import staleness
 
 WEB_DIR = Path(__file__).resolve().parent
 TEMPLATE_DIR = WEB_DIR / "templates"
@@ -35,6 +36,12 @@ MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 _CHUNK = 1024 * 1024
 
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
+# Registered as a Jinja global rather than passed in each route's context: a
+# warning that only appears on the pages someone remembered to wire it into is
+# not a warning. base.html calls it defensively, so an older server that lacks
+# this global still renders, just without the banner.
+templates.env.globals["engine_is_stale"] = staleness.watch.is_stale
+
 router = APIRouter()
 
 

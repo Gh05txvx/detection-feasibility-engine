@@ -109,6 +109,16 @@ nav a {
 
 nav a:hover { background: var(--bg); color: var(--ink); }
 
+.banner {
+  padding: 0.6rem 1.5rem;
+  background: var(--warn-soft);
+  color: var(--warn);
+  border-bottom: 1px solid var(--line);
+  font-size: 0.89rem;
+}
+
+.banner code { background: rgba(0, 0, 0, 0.06); padding: 0 0.25rem; border-radius: 3px; }
+
 main { max-width: 64rem; margin: 0 auto; padding: 1.75rem 1.5rem 4rem; }
 
 footer {

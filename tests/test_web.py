@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from engine.storage import db, job_store, taxonomy_store
 from engine.storage.job_store import JobStatus
 from engine.storage.taxonomy_store import TaxonomyEntry
-from engine.web import routes, serve
+from engine.web import routes, serve, staleness
 
 FIXTURES = Path(__file__).parent / "fixtures"
 CLOUDFLARE = FIXTURES / "cloudflare_waf_firewall_events.csv"
@@ -102,6 +102,86 @@ def test_uploaded_filenames_cannot_escape_the_upload_directory():
     assert routes._safe_filename("a/b/c.csv") == "c.csv"
     assert "\\" not in routes._safe_filename(r"..\..\windows\system32\x.csv")
     assert routes._safe_filename("") == "sample"
+
+
+# --------------------------------------------------------------- staleness
+
+
+def _py_file(directory: Path, name: str, body: str = "x = 1\n") -> Path:
+    path = directory / name
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def test_watch_says_nothing_before_it_has_been_marked(tmp_path):
+    """An unmarked watch must not warn; that would flag every correct server."""
+    watch = staleness.StalenessWatch(tmp_path, recheck_seconds=0)
+    _py_file(tmp_path, "a.py")
+
+    assert watch.is_stale() is False
+
+
+def test_watch_is_quiet_while_the_code_is_unchanged(tmp_path):
+    watch = staleness.StalenessWatch(tmp_path, recheck_seconds=0)
+    _py_file(tmp_path, "a.py")
+    watch.mark_started()
+
+    assert watch.is_stale() is False
+
+
+def test_watch_notices_an_edited_file(tmp_path):
+    watch = staleness.StalenessWatch(tmp_path, recheck_seconds=0)
+    edited = _py_file(tmp_path, "a.py")
+    watch.mark_started()
+
+    edited.write_text("x = 2\n", encoding="utf-8")
+    import os
+
+    os.utime(edited, (1_800_000_000, 1_800_000_000))
+
+    assert watch.is_stale() is True
+
+
+def test_watch_notices_a_new_file(tmp_path):
+    watch = staleness.StalenessWatch(tmp_path, recheck_seconds=0)
+    _py_file(tmp_path, "a.py")
+    watch.mark_started()
+
+    _py_file(tmp_path, "b.py")
+
+    assert watch.is_stale() is True
+
+
+def test_watch_ignores_everything_that_is_not_python(tmp_path):
+    """Templates reload themselves and static files are read per request."""
+    watch = staleness.StalenessWatch(tmp_path, recheck_seconds=0)
+    _py_file(tmp_path, "a.py")
+    watch.mark_started()
+
+    (tmp_path / "page.html").write_text("<p>edited</p>", encoding="utf-8")
+
+    assert watch.is_stale() is False
+
+
+def test_the_banner_appears_when_the_code_has_moved_on(client, monkeypatch):
+    monkeypatch.setitem(routes.templates.env.globals, "engine_is_stale", lambda: True)
+
+    body = client.get("/").text
+
+    assert "running older code than what is on disk" in body
+    assert "run.bat" in body
+
+
+def test_no_banner_on_a_current_server(client):
+    assert "running older code" not in client.get("/").text
+
+
+def test_pages_still_render_for_a_server_that_lacks_the_global(client, monkeypatch):
+    """The banner exists for stale servers, so it must not itself break one."""
+    monkeypatch.delitem(routes.templates.env.globals, "engine_is_stale")
+
+    for page in ("/", "/history"):
+        assert client.get(page).status_code == 200
 
 
 # ------------------------------------------------------------------- pages
