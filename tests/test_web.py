@@ -305,6 +305,34 @@ def test_results_page_shows_candidates_with_type_and_backtest(client):
     assert "Download draft runbook" in response.text
 
 
+def test_a_candidate_card_shows_the_events_it_fired_on(client):
+    """A match rate is a number; the events are what a reviewer can check."""
+    _seed_taxonomy()
+    job_id = _upload(client, CLOUDFLARE).headers["location"].rsplit("/", 1)[-1]
+
+    response = client.get(f"/jobs/{job_id}/results")
+
+    assert "this fired on" in response.text
+    assert "Event time" in response.text
+    assert "Datetime" in response.text
+    # A value out of the sample itself, not just a count of them.
+    assert "shop.example.co.id" in response.text
+
+
+def test_a_rejected_card_names_the_field_that_is_missing(client):
+    """'Rejected' is a verdict; the missing field is the reason to act on."""
+    job_id = _upload(client, APPLIANCE).headers["location"].rsplit("/", 1)[-1]
+
+    response = client.get(f"/jobs/{job_id}/results")
+
+    assert "The sample carries no field for" in response.text
+    assert "Evidence needed" in response.text
+    assert "user identity" in response.text
+    # And the sample's own events, so the gap is read against the data.
+    assert "What the log actually looks like" in response.text
+    assert "vpn-gw-01" in response.text
+
+
 def test_runbook_downloads_as_markdown(client):
     _seed_taxonomy()
     job_id = _upload(client, CLOUDFLARE).headers["location"].rsplit("/", 1)[-1]

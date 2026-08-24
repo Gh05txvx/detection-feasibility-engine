@@ -1,0 +1,68 @@
+{# Sample events shown as evidence on a result card.
+
+   Used by both outcomes. On the match path these are the events the rule fired
+   on; on the rejection path they are events from the sample, shown so the list
+   of missing fields is read against what the data actually looks like. #}
+
+{% macro events_table(examples, time_label, caption) %}
+  {% set columns = [] %}
+  {% for example in examples %}
+    {% for name, value in example.key_fields %}
+      {% if name not in columns %}{% set _ = columns.append(name) %}{% endif %}
+    {% endfor %}
+  {% endfor %}
+
+  {# Driven by the events, not by the fingerprint: if they carry a time it
+     belongs in the table whatever the fingerprint concluded. #}
+  {% set show_time = examples | map(attribute='raw_timestamp') | select | list | length > 0 %}
+
+  <div class="table-wrap table-scroll" style="margin-top:0.6rem">
+    <table class="events">
+      <thead>
+        <tr>
+          <th style="width:3.5rem">Line</th>
+          {% if show_time %}<th style="width:14rem">Event time{% if time_label %} <span class="muted">({{ time_label }})</span>{% endif %}</th>{% endif %}
+          {% for name in columns %}<th><code>{{ name }}</code></th>{% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+      {% for example in examples %}
+        {% set values = dict(example.key_fields) %}
+        <tr>
+          <td class="num">{{ example.line }}</td>
+          {% if show_time %}
+          <td class="small">
+            <code>{{ example.raw_timestamp or '-' }}</code>
+            {% if not example.timestamp %}
+              <span class="badge bad">unreadable</span>
+            {% elif not example.timestamp.startswith((example.raw_timestamp or '').rstrip('Zz').replace(' ', 'T')) %}
+              <div class="muted">&rarr; {{ example.timestamp }}</div>
+            {% endif %}
+          </td>
+          {% endif %}
+          {% for name in columns %}<td class="small">{% if values.get(name) %}<code>{{ values[name] }}</code>{% else %}<span class="muted">-</span>{% endif %}</td>{% endfor %}
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if caption %}<p class="muted small" style="margin:0.4rem 0 0">{{ caption }}</p>{% endif %}
+
+  {% set first = examples[0] %}
+  {% if first.other_fields %}
+  <details class="disclosure">
+    <summary>Line {{ first.line }} in full &mdash; the context those columns leave out</summary>
+    <div class="body">
+      <table class="kv">
+        {% for name, value in first.key_fields + first.other_fields %}
+        <tr><th><code>{{ name }}</code></th><td class="small"><code>{{ value }}</code></td></tr>
+        {% endfor %}
+        {% if first.omitted_fields %}
+        <tr><th></th><td class="muted small">and {{ first.omitted_fields }} more field(s)</td></tr>
+        {% endif %}
+      </table>
+    </div>
+  </details>
+  {% endif %}
+{% endmacro %}

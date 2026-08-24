@@ -36,7 +36,7 @@ from pydantic import BaseModel, Field
 
 from engine.ingestion.schemas import LogRecord
 from engine.matching.candidate import MatchCandidate
-from engine.profiling.field_profiler import LogFingerprint
+from engine.profiling.field_profiler import EventExample, LogFingerprint, build_examples
 from engine.storage.taxonomy_store import TaxonomyEntry
 
 # A rule matching more than this share of all events is unlikely to be a
@@ -72,6 +72,9 @@ class BacktestResult(BaseModel):
     alerts: int = 0
     match_rate: float = 0.0
     example_lines: list[int] = Field(default_factory=list)
+    # The matched events themselves, not just their line numbers: what a
+    # reviewer needs to judge whether the rule fired for the right reason.
+    examples: list[EventExample] = Field(default_factory=list)
     unsupported_reason: str | None = None
     aggregation_note: str | None = None
 
@@ -185,6 +188,13 @@ def backtest(
         alerts=alerts,
         match_rate=round(len(matched) / total, 4) if total else 0.0,
         example_lines=[record.line for record in matched[:5]],
+        examples=build_examples(
+            matched,
+            source=fingerprint.timestamp_source(),
+            # The columns the logic actually keyed on, so a reviewer checks the
+            # fields that decided the match before anything else in the event.
+            key_fields=list(candidate.matched_fields.values()),
+        ),
         aggregation_note=aggregation_note,
     )
 

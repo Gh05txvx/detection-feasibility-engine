@@ -371,6 +371,70 @@ def test_a_single_hypothesis_renders_as_a_standalone_document():
     assert second.hypothesis.behavior not in markdown
 
 
+def test_the_report_names_the_field_that_is_missing_not_just_the_verdict():
+    """'Rejected' is the verdict; the missing field is what goes to the client."""
+    fingerprint = _fingerprint([_profile("host")], data_category=DataCategory.SYSTEM_LOGS)
+    report = build_report("sample.csv", fingerprint, sigma_index=_sigma_index("T1543"))
+    item = report.reports[0]
+
+    assert item.evidence, "the resolutions have to survive onto the report to be shown"
+    assert [gap.label for gap in item.missing_evidence]
+    assert all(gap.field_name is None for gap in item.missing_evidence)
+    assert any(gap.field_name == "host" for gap in item.present_evidence)
+
+    markdown = render_markdown(report)
+    assert "| Evidence | Sample field | Matched by | Status |" in markdown
+    assert "**MISSING**" in markdown
+    assert "**Rejected.** The sample carries no field for" in markdown
+    for gap in item.missing_evidence:
+        assert gap.label in markdown
+
+
+def test_a_rejection_that_is_not_about_a_missing_field_says_so():
+    """Not every rejection is a field gap; calling one a field gap misdirects the ask."""
+    profiles = [
+        _profile("user"), _profile("host"), _profile("action"), _profile("status"),
+        _profile("src_ip", entity_type=EntityType.IP),
+        _profile("timestamp", dtype="timestamp", example="2026-06-11T03:02:14Z"),
+    ]
+    fingerprint = _fingerprint(profiles, data_category=DataCategory.AUTHENTICATION_LOGS,
+                               record_count=6)
+    report = build_report("tiny.csv", fingerprint, records=_records(6))
+
+    rejected = [
+        item for item in report.reports
+        if item.verdict == VERDICT_REJECTED and not item.missing_evidence
+    ]
+    assert rejected, "a six-event sample cannot support a baseline even when every field is there"
+    for item in rejected:
+        assert item.rejection_reason.startswith("Every field this hypothesis needs is present")
+        assert "What the sample does not give is" in item.rejection_reason
+        # And the field table still renders, showing that they are all present.
+        assert "**MISSING**" not in "\n".join(render_hypothesis_markdown(report, 0).splitlines())
+
+
+def test_the_report_shows_real_events_from_the_sample():
+    """The gaps are only judgeable next to what the data does carry."""
+    sample = parser.parse(APPLIANCE)
+    profiles = [_profile("host"), _profile("severity"), _profile("message"),
+                _profile("timestamp", dtype="timestamp", example="2026-06-11T03:02:14Z")]
+    fingerprint = _fingerprint(profiles, data_category=DataCategory.SYSTEM_LOGS,
+                               record_count=sample.record_count)
+
+    report = build_report("sample.csv", fingerprint, records=sample.records,
+                          sigma_index=_sigma_index("T1543"))
+
+    assert len(report.examples) == 5
+    assert report.examples[0].line == 2
+    assert report.examples[0].timestamp is not None
+
+    markdown = render_markdown(report)
+    assert "Example events from the sample" in markdown
+    assert "vpn-gw-01" in markdown
+    # And it travels with the single-hypothesis export, which stands alone.
+    assert "vpn-gw-01" in render_hypothesis_markdown(report, 0)
+
+
 def test_a_single_hypothesis_carries_only_its_own_requirements():
     fingerprint = _fingerprint([_profile("host")], data_category=DataCategory.SYSTEM_LOGS)
     report = build_report("sample.csv", fingerprint, sigma_index=_sigma_index("T1543"))

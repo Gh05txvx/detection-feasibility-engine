@@ -1,6 +1,8 @@
 {% extends "base.html" %}
+{% import "_events.html" as events %}
 {% block title %}Results &mdash; {{ job.filename }}{% endblock %}
 {% block content %}
+{% set timestamp_source = result.fingerprint.timestamp_source() %}
 
 <h1>{{ job.filename }}</h1>
 <p class="subtitle">
@@ -33,6 +35,17 @@
     <span class="label">flagged noisy</span>
   </div>
 </div>
+
+<p class="muted small event-time">
+  {% if timestamp_source %}
+    <strong>Event time:</strong> <code>{{ timestamp_source.description }}</code>
+    {%- if timestamp_source.granularity != 'unknown' %} &middot; {{ timestamp_source.granularity }} granularity{% endif %}
+    {%- if timestamp_source.is_split %} &middot; <span class="warn-text">split across two columns, ingest must combine them</span>{% endif %}
+    {%- if not timestamp_source.is_readable %} &middot; <span class="warn-text">present but not readable as written</span>{% endif %}
+  {% else %}
+    <strong>Event time:</strong> no timestamp column was found, so nothing here can be time-scoped.
+  {% endif %}
+</p>
 
 <div class="section-head">
   <h2>Candidates <span class="muted small">(<span id="candidate-count">{{ summary.total }}</span> shown)</span></h2>
@@ -91,6 +104,22 @@
           <span class="muted">Not backtested &mdash; {{ bt.unsupported_reason }}</span>
         {% endif %}
       </p>
+    {% endif %}
+
+    {% if forecast and forecast.backtest.examples %}
+    <details class="disclosure">
+      <summary>
+        The {{ forecast.backtest.examples | length }} event{{ '' if forecast.backtest.examples | length == 1 else 's' }}
+        this fired on &mdash; check the rule matched for the right reason
+      </summary>
+      <div class="body">
+        {{ events.events_table(
+             forecast.backtest.examples,
+             timestamp_source.description if timestamp_source else none,
+             'Fields the logic keyed on lead the table. Everything shown is from your sample and stays on this machine.'
+           ) }}
+      </div>
+    </details>
     {% endif %}
 
     <details class="disclosure">
@@ -171,6 +200,17 @@
   </div>
 </div>
 
+<p class="muted small event-time">
+  {% if report.context.timestamp_description %}
+    <strong>Event time:</strong> <code>{{ report.context.timestamp_description }}</code>
+    {%- if report.context.time_span_seconds %} &middot; sample spans {{ span(report.context.time_span_seconds) }}{% endif %}
+    {%- if report.context.timestamp_needs_combining %} &middot; <span class="warn-text">split across two columns, ingest must combine them</span>{% endif %}
+    {%- if not report.context.timestamp_readable %} &middot; <span class="warn-text">present but not readable as written</span>{% endif %}
+  {% else %}
+    <strong>Event time:</strong> no timestamp column was found in this sample.
+  {% endif %}
+</p>
+
 <p><a class="button" href="/jobs/{{ job.job_id }}/report">Download the full report</a></p>
 
 <div class="report">
@@ -194,6 +234,32 @@
       <tr><th>Evidence</th><td>{{ item.hypothesis.evidence }}</td></tr>
     </table>
 
+    {% if item.rejection_reason %}
+    <p class="note bad" style="margin-top:0.7rem">
+      <strong>Rejected.</strong> {{ item.rejection_reason }}
+    </p>
+    {% endif %}
+
+    {% if item.evidence %}
+    <table style="margin-top:0.7rem">
+      <thead><tr><th style="width:13rem">Evidence needed</th><th style="width:11rem">Sample field</th><th style="width:8rem">Matched by</th><th>Status</th></tr></thead>
+      <tbody>
+      {% for gap in item.evidence %}
+        <tr>
+          <td class="small">{{ gap.label }}</td>
+          <td class="small">{% if gap.field_name %}<code>{{ gap.field_name }}</code>{% else %}<span class="muted">-</span>{% endif %}</td>
+          <td class="small muted">{{ gap.matched_by or '-' }}</td>
+          <td>
+            {%- if gap.satisfied %}<span class="badge ok">present</span>
+            {%- elif gap.required %}<span class="badge bad">missing</span>
+            {%- else %}<span class="badge neutral">absent, optional</span>{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
     <table style="margin-top:0.7rem">
       <thead><tr><th style="width:13rem">Validation step</th><th style="width:5rem">Result</th><th>Detail</th></tr></thead>
       <tbody>
@@ -213,6 +279,19 @@
 
     {% if item.remediation %}
     <p class="note" style="margin-top:0.7rem"><strong>Remediation.</strong> {{ item.remediation }}</p>
+    {% endif %}
+
+    {% if report.examples %}
+    <details class="disclosure">
+      <summary>What the log actually looks like &mdash; {{ report.examples | length }} event(s) from this sample</summary>
+      <div class="body">
+        {{ events.events_table(
+             report.examples,
+             report.context.timestamp_description,
+             'Read the gaps above against these. Everything shown is from your sample and stays on this machine.'
+           ) }}
+      </div>
+    </details>
     {% endif %}
 
     <div class="actions">

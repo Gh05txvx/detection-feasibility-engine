@@ -17,7 +17,9 @@ from engine.profiling.field_profiler import (
     DATE_ORDER_CONTRADICTORY,
     DATE_ORDER_DAY_FIRST,
     DATE_ORDER_MONTH_FIRST,
+    EXAMPLE_VALUE_MAX,
     FieldProfile,
+    build_examples,
     build_fingerprint,
     find_timestamp_source,
     parse_timestamp,
@@ -186,6 +188,40 @@ def test_w3c_sample_resolves_its_event_time():
     assert all(moment is not None for moment in moments)
     span = (max(moments) - min(moments)).total_seconds()
     assert span == 8145  # 01:02:11 to 03:17:56, the range the fixture covers
+
+
+# ------------------------------------------------------------ event examples
+
+
+def test_examples_lead_with_the_fields_the_verdict_turned_on():
+    sample = parser.parse(CLOUDFLARE)
+    profiles = profile_fields(sample.records, field_names=sample.field_names)
+    source = find_timestamp_source(profiles)
+
+    examples = build_examples(
+        sample.records, source=source, key_fields=["ClientRequestPath", "Action"], limit=2
+    )
+
+    assert len(examples) == 2
+    assert [name for name, _ in examples[0].key_fields] == ["ClientRequestPath", "Action"]
+    assert examples[0].timestamp is not None
+    assert examples[0].raw_timestamp == sample.records[0].fields["Datetime"]
+    # Event time has its own column, so it is not repeated among the others.
+    assert "Datetime" not in [name for name, _ in examples[0].other_fields]
+    # Blank columns are dropped: a row of dashes hides the values that matter.
+    assert all(value.strip() for _, value in examples[0].other_fields)
+
+
+def test_a_long_value_is_shortened_rather_than_dropped():
+    """A payload in a URL is the evidence; truncating beats omitting."""
+    record = LogRecord(line=4, fields={"url": "/a?q=" + "x" * 500})
+
+    example = build_examples([record], key_fields=["url"])[0]
+
+    value = dict(example.key_fields)["url"]
+    assert len(value) == EXAMPLE_VALUE_MAX
+    assert value.startswith("/a?q=xxx")
+    assert value.endswith("…")
 
 
 # --------------------------------------------- slash-separated date ordering

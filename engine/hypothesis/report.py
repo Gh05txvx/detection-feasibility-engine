@@ -25,17 +25,24 @@ from pydantic import BaseModel, Field
 from engine.hypothesis.able import Hypothesis, build_hypotheses
 from engine.hypothesis.validator import (
     CheckStatus,
+    EvidenceResolution,
     SampleContext,
     ValidationCheck,
     build_context,
+    resolve_evidence,
     validate,
 )
 from engine.ingestion.schemas import LogRecord
 from engine.matching.sigma_matcher import SigmaRuleIndex
-from engine.profiling.field_profiler import LogFingerprint
+from engine.profiling.entity_recognition import EntityType
+from engine.profiling.field_profiler import EventExample, LogFingerprint, build_examples
 
 VERDICT_REJECTED = "rejected"
 VERDICT_FEASIBLE_NO_RULE = "feasible_no_rule"
+
+# Columns to lead the example-events table with when the sample carries no
+# recognisable entity to lead with instead.
+_FALLBACK_LEAD_FIELDS = 4
 
 STEP_TITLES = {
     "reassess_data_patterns": "Reassess data & patterns",
@@ -57,10 +64,23 @@ class HypothesisReport(BaseModel):
     checks: list[ValidationCheck] = Field(default_factory=list)
     verdict: str = VERDICT_REJECTED
     remediation: str | None = None
+    # Field by field: what the hypothesis asked for and what the sample answered
+    # with. "Rejected" is a verdict; this is the reason, at the level someone can
+    # act on when they go back to the client.
+    evidence: list[EvidenceResolution] = Field(default_factory=list)
 
     @property
     def failed_checks(self) -> list[ValidationCheck]:
         return [check for check in self.checks if check.status is CheckStatus.FAIL]
+
+    @property
+    def missing_evidence(self) -> list[EvidenceResolution]:
+        """Required fields no column in the sample satisfies."""
+        return [item for item in self.evidence if item.required and not item.satisfied]
+
+    @property
+    def present_evidence(self) -> list[EvidenceResolution]:
+        return [item for item in self.evidence if item.satisfied]
 
     @property
     def requirements(self) -> list[str]:
@@ -71,6 +91,34 @@ class HypothesisReport(BaseModel):
                 seen.setdefault(item, None)
         return list(seen)
 
+    @property
+    def rejection_reason(self) -> str | None:
+        """Why this was rejected, in terms that can be taken to the client.
+
+        "Rejected" is the verdict; this is the actionable half. A missing field
+        is named as a field, because a field is what gets requested. When no
+        field is missing, the gap is about how much the sample covers - a
+        different ask, and one that should not be dressed up as a field.
+        """
+        if self.verdict != VERDICT_REJECTED:
+            return None
+
+        missing = self.missing_evidence
+        if missing:
+            return (
+                "The sample carries no field for "
+                + ", ".join(item.label for item in missing)
+                + ". Everything else follows from that, or from how much data the sample covers."
+            )
+
+        gaps = self.requirements
+        if gaps:
+            return (
+                "Every field this hypothesis needs is present. What the sample does not give "
+                "is " + "; ".join(gaps) + "."
+            )
+        return self.failed_checks[0].detail if self.failed_checks else None
+
 
 class RejectionReport(BaseModel):
     """The whole document: every hypothesis asked of one sample."""
@@ -80,6 +128,9 @@ class RejectionReport(BaseModel):
     fingerprint: LogFingerprint
     context: SampleContext
     reports: list[HypothesisReport] = Field(default_factory=list)
+    # Held once and rendered into every card and every single-hypothesis export:
+    # the events are a property of the sample, not of one hypothesis.
+    examples: list[EventExample] = Field(default_factory=list)
 
     @property
     def ingest_requirements(self) -> list[str]:
@@ -138,16 +189,53 @@ def build_report(
                 checks=checks,
                 verdict=verdict,
                 remediation=_remediation(hypothesis, failed),
+                # Recomputed rather than threaded out of validate(), which
+                # resolves the same requirements for its own checks. Resolution
+                # is a pure lookup over the fingerprint, so the two agree.
+                evidence=resolve_evidence(hypothesis.evidence_requirements, fingerprint),
             )
         )
 
+    source = fingerprint.timestamp_source()
     return RejectionReport(
         sample_path=sample_path,
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         fingerprint=fingerprint,
         context=context,
         reports=reports,
+        examples=build_examples(
+            records or [],
+            source=source,
+            # No rule matched, so nothing singles out a column. The fields that
+            # carry identity are what an analyst reads an unfamiliar log by.
+            key_fields=_identifying_fields(fingerprint),
+        ),
     )
+
+
+def _identifying_fields(fingerprint: LogFingerprint) -> list[str]:
+    """The columns an analyst orients by when reading an unfamiliar sample."""
+    wanted = {
+        EntityType.IP,
+        EntityType.USER,
+        EntityType.DOMAIN,
+        EntityType.URL,
+        EntityType.PROCESS_NAME,
+        EntityType.FILE_PATH,
+    }
+    identifying = [
+        profile.field_name for profile in fingerprint.profiles if profile.entity_type in wanted
+    ]
+    if identifying:
+        return identifying
+
+    # A minimal appliance log may carry no recognisable entity at all. Leading
+    # with the first few columns still beats a table of nothing but line numbers.
+    return [
+        profile.field_name
+        for profile in fingerprint.profiles
+        if profile.dtype not in ("timestamp", "date", "time", "empty")
+    ][:_FALLBACK_LEAD_FIELDS]
 
 
 def _remediation(hypothesis: Hypothesis, failed: Sequence[ValidationCheck]) -> str | None:
@@ -189,6 +277,7 @@ def render_markdown(report: RejectionReport) -> str:
         f"**Sample size:** {report.context.record_count} events"
         + (f", spanning {_span(report.context)}" if report.context.time_span_seconds else "")
         + "  ",
+        f"**Event time:** {_event_time_line(report.context)}  ",
         f"**Outcome:** {len(report.reports)} hypothesis(es) evaluated - "
         f"{len(report.rejected)} rejected, {len(report.feasible)} feasible without an existing rule",
         "",
@@ -215,7 +304,9 @@ def render_markdown(report: RejectionReport) -> str:
     ])
 
     for position, hypothesis_report in enumerate(report.reports, start=1):
-        lines.extend(_render_hypothesis(position, hypothesis_report))
+        lines.extend(
+            _render_hypothesis(position, hypothesis_report, report.examples, report.context)
+        )
 
     requirements = report.onboarding_requirements
     lines.extend(["## Onboarding requirements", ""])
@@ -271,7 +362,10 @@ def render_hypothesis_markdown(report: RejectionReport, index: int) -> str:
         f"**Sample:** `{report.sample_path}`  ",
         f"**Generated:** {report.generated_at}  ",
         f"**Log source:** {triple} - {category}  ",
-        f"**Sample size:** {report.context.record_count} events",
+        f"**Sample size:** {report.context.record_count} events"
+        + (f", spanning {_span(report.context)}" if report.context.time_span_seconds else "")
+        + "  ",
+        f"**Event time:** {_event_time_line(report.context)}",
         "",
         "> **No automatic match is not the same as not detectable.** This is one "
         "hypothesis assessed against one log sample. It says what that sample can and "
@@ -279,6 +373,8 @@ def render_hypothesis_markdown(report: RejectionReport, index: int) -> str:
         "",
         *_able_table(hypothesis),
         *_coverage_line(hypothesis),
+        *_rejection_reason(item),
+        *_evidence_table(item, level="##"),
         "## Validation",
         "",
         *_checks_table(item.checks),
@@ -286,6 +382,8 @@ def render_hypothesis_markdown(report: RejectionReport, index: int) -> str:
 
     if item.remediation:
         lines.extend([f"**Remediation.** {item.remediation}", ""])
+
+    lines.extend(_events_table(report.examples, report.context, level="##"))
 
     requirements = list(dict.fromkeys(report.ingest_requirements + item.requirements))
     lines.extend(["## What this needs", ""])
@@ -340,6 +438,94 @@ def _coverage_line(hypothesis: Hypothesis) -> list[str]:
     return [" · ".join(details), ""] if details else []
 
 
+def _evidence_table(report: HypothesisReport, *, level: str = "###") -> list[str]:
+    """Which field the hypothesis wanted, and what the sample answered with.
+
+    The verdict says rejected; this says *what is missing*, by name, which is the
+    only form the gap can be taken back to the client in.
+    """
+    if not report.evidence:
+        return []
+
+    lines = [
+        f"{level} Evidence this hypothesis needs",
+        "",
+        "| Evidence | Sample field | Matched by | Status |",
+        "|---|---|---|---|",
+    ]
+    for item in report.evidence:
+        if item.satisfied:
+            status, field, route = "present", f"`{item.field_name}`", item.matched_by or "-"
+        else:
+            status = "**MISSING**" if item.required else "absent (optional)"
+            field, route = "-", "-"
+        lines.append(f"| {item.label} | {field} | {route} | {status} |")
+    lines.append("")
+    return lines
+
+
+def _rejection_reason(report: HypothesisReport) -> list[str]:
+    reason = report.rejection_reason
+    return [f"**Rejected.** {reason}", ""] if reason else []
+
+
+def _events_table(
+    examples: Sequence[EventExample], context: SampleContext, *, level: str = "###"
+) -> list[str]:
+    """Real events from the sample, so the gaps above are read against the data."""
+    if not examples:
+        return []
+
+    columns = list(dict.fromkeys(name for example in examples for name, _ in example.key_fields))
+    show_time = any(example.raw_timestamp for example in examples)
+    header = ["Line"]
+    if show_time:
+        header.append(
+            "Event time"
+            + (f" ({context.timestamp_description})" if context.timestamp_description else "")
+        )
+    header.extend(f"`{name}`" for name in columns)
+
+    lines = [
+        f"{level} Example events from the sample",
+        "",
+        "| " + " | ".join(header) + " |",
+        "|" + "---|" * len(header),
+    ]
+    for example in examples:
+        values = dict(example.key_fields)
+        row = [str(example.line)]
+        if show_time:
+            raw = example.raw_timestamp or "-"
+            row.append(f"`{raw}`" + ("" if example.timestamp else " (unreadable)"))
+        row.extend(_cell(values.get(name)) for name in columns)
+        lines.append("| " + " | ".join(row) + " |")
+
+    first = examples[0]
+    if first.other_fields:
+        lines.extend([
+            "",
+            f"Line {first.line} in full:",
+            "",
+            "| Field | Value |",
+            "|---|---|",
+        ])
+        lines.extend(
+            f"| `{name}` | {_cell(value)} |"
+            for name, value in first.key_fields + first.other_fields
+        )
+        if first.omitted_fields:
+            lines.append(f"| | *and {first.omitted_fields} more field(s)* |")
+    lines.append("")
+    return lines
+
+
+def _cell(value: str | None) -> str:
+    if value is None or value == "":
+        return "-"
+    return "`" + value.replace("|", "\\|").replace("`", "'") + "`"
+
+
 def _checks_table(checks: Sequence[ValidationCheck]) -> list[str]:
     lines = ["| Validation step | Result | Detail |", "|---|---|---|"]
     for check in checks:
@@ -350,7 +536,12 @@ def _checks_table(checks: Sequence[ValidationCheck]) -> list[str]:
     return lines
 
 
-def _render_hypothesis(position: int, report: HypothesisReport) -> list[str]:
+def _render_hypothesis(
+    position: int,
+    report: HypothesisReport,
+    examples: Sequence[EventExample],
+    context: SampleContext,
+) -> list[str]:
     hypothesis = report.hypothesis
     lines = [
         f"## Hypothesis {position}: {hypothesis.behavior}",
@@ -359,12 +550,15 @@ def _render_hypothesis(position: int, report: HypothesisReport) -> list[str]:
         "",
         *_able_table(hypothesis),
         *_coverage_line(hypothesis),
+        *_rejection_reason(report),
+        *_evidence_table(report),
         *_checks_table(report.checks),
     ]
 
     if report.remediation:
         lines.extend([f"**Remediation.** {report.remediation}", ""])
 
+    lines.extend(_events_table(examples, context))
     return lines
 
 
@@ -389,8 +583,20 @@ def _why_no_match(fingerprint: LogFingerprint) -> str:
     )
 
 
-def _span(context: SampleContext) -> str:
-    seconds = context.time_span_seconds or 0
+def _event_time_line(context: SampleContext) -> str:
+    """Name the column event time comes from, and say if it cannot be read."""
+    if context.timestamp_description is None:
+        return "no timestamp column was found in this sample"
+    if not context.timestamp_readable:
+        return f"`{context.timestamp_description}` - present, but not readable as written"
+    if context.timestamp_needs_combining:
+        return f"`{context.timestamp_description}`, split across two columns"
+    return f"`{context.timestamp_description}`"
+
+
+def humanise_span(seconds: float | None) -> str:
+    """A sample's elapsed time in the largest unit that stays readable."""
+    seconds = seconds or 0
     if seconds < 90:
         return f"{seconds:.0f} seconds"
     if seconds < 5400:
@@ -398,3 +604,7 @@ def _span(context: SampleContext) -> str:
     if seconds < 172800:
         return f"{seconds / 3600:.1f} hours"
     return f"{seconds / 86400:.1f} days"
+
+
+def _span(context: SampleContext) -> str:
+    return humanise_span(context.time_span_seconds)

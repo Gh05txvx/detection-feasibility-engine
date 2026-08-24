@@ -10,7 +10,7 @@ from sigma.rule import SigmaRule
 from engine.classification.rule_type_classifier import ElasticRuleType, RuleTypeDecision
 from engine.matching.candidate import MatchCandidate, MatchSource
 from engine.prediction.backtest import BacktestResult, ConfidenceTier, PredictionResult
-from engine.profiling.field_profiler import FieldProfile, LogFingerprint
+from engine.profiling.field_profiler import EventExample, FieldProfile, LogFingerprint
 from engine.runbook.generator import build_field_mapping, generate
 from engine.storage.taxonomy_store import TaxonomyEntry
 
@@ -266,6 +266,75 @@ def test_backtest_numbers_appear_in_the_expected_trigger_section():
     trigger = runbook.markdown.split("## Expected trigger")[1]
     assert "**12**" in trigger
     assert "12.0%" in trigger
+
+
+def test_matched_events_are_shown_not_just_counted():
+    """A reviewer checks whether the rule fired for the right reason, not that it did."""
+    forecast = _forecast(
+        backtest=BacktestResult(
+            evaluated=True, total_events=100, matched_events=1, alerts=1, match_rate=0.01,
+            example_lines=[7],
+            examples=[EventExample(
+                line=7,
+                timestamp="2026-03-11T09:03:44+00:00",
+                raw_timestamp="2026-03-11T09:03:44Z",
+                key_fields=[("ClientRequestQuery", "id=1 OR 1=1")],
+                other_fields=[("Action", "block")],
+                omitted_fields=3,
+            )],
+        )
+    )
+
+    markdown = generate(_candidate(), _fingerprint(), _decision(), forecast,
+                        sigma_rule=_sigma_rule()).markdown
+    trigger = markdown.split("## Expected trigger")[1]
+
+    assert "### Matched events" in trigger
+    assert "id=1 OR 1=1" in trigger
+    # The raw form of the time is shown; the ISO reading only when it differs.
+    assert "2026-03-11T09:03:44Z" in trigger
+    assert "->" not in trigger.split("### Matched events")[1].splitlines()[3]
+    # And one event in full, with the fields the wide table left out.
+    assert "Line 7 in full" in trigger
+    assert "`Action` | `block`" in trigger
+    assert "and 3 more field(s)" in trigger
+
+
+def test_a_reinterpreted_timestamp_shows_both_readings():
+    """A day-first date is a reading of the value, and the reader should see both."""
+    forecast = _forecast(
+        backtest=BacktestResult(
+            evaluated=True, total_events=10, matched_events=1, alerts=1, match_rate=0.1,
+            examples=[EventExample(
+                line=3,
+                timestamp="2026-07-16T20:26:12.030000+00:00",
+                raw_timestamp="16/07/2026 20:26:12.030",
+                key_fields=[("ClientIP", "203.0.113.1")],
+            )],
+        )
+    )
+
+    markdown = generate(_candidate(), _fingerprint(), _decision(), forecast,
+                        sigma_rule=_sigma_rule()).markdown
+
+    assert "`16/07/2026 20:26:12.030` -> 2026-07-16T20:26:12.030000+00:00" in markdown
+
+
+def test_the_event_time_column_is_named_in_the_coverage_table():
+    fingerprint = LogFingerprint(
+        profiles=[
+            FieldProfile(field_name="date", dtype="date", cardinality=1, null_rate=0.0,
+                         example="2026-07-14"),
+            FieldProfile(field_name="time", dtype="time", cardinality=9, null_rate=0.0,
+                         example="01:02:11"),
+        ],
+        record_count=9,
+    )
+
+    markdown = generate(_candidate(), fingerprint, _decision(), _forecast(),
+                        sigma_rule=_sigma_rule()).markdown
+
+    assert "| Event time | `date + time` (second granularity) - split across two columns |" in markdown
 
 
 def test_writes_a_file_when_given_a_directory(tmp_path):

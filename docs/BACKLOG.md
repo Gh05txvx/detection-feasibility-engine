@@ -130,6 +130,50 @@ Built:
   is shared by the combined report and every single-hypothesis export rather than
   living only in the aggregate.
 
+| 1.7 | ~~**Show the evidence on every result card.**~~ **Done 2026-08-24.** Both outcomes now carry the event time, real sample events, and — on the rejection path — a field-by-field account of what is missing. Below. | eng | done |
+
+### 1.7 — a verdict a reviewer can check
+
+Every card stated a conclusion and nothing a reviewer could weigh it against.
+*"5 of 37 sample events match"* is a number; a reviewer who cannot see the five
+events is being asked to trust the count. The rejection cards were worse: they
+said **rejected** and listed which validation step failed, but the thing that
+actually goes back to the client — *which field is missing* — was buried in
+prose inside a check's detail cell.
+
+Three things now appear on every result, on the page and in the downloaded
+markdown alike:
+
+- **Event time**, named. Which column it comes from, its granularity, and
+  whether it is split across two columns or unreadable as written. Every rule is
+  time-scoped on that column, so a reviewer should not have to go back to the
+  structure page to find out which one it is.
+- **The events themselves.** On the match path, the events the logic fired on,
+  led by the columns it keyed on. On the rejection path, events from the sample,
+  so the list of missing fields is read against what the data does carry. The
+  raw timestamp is shown as the sample wrote it, with the engine's reading of it
+  beside it *only when the two differ* — which is exactly the day-first case 1.6
+  introduced. Blank columns are dropped, because a row of thirty dashes hides
+  the four values that matter, and one event is shown in full underneath so the
+  narrowed columns do not hide context.
+- **Why it was rejected, in the client's terms.** A field-by-field table of what
+  the hypothesis asked for and what the sample answered with, and a headline
+  sentence naming the gap. A rejection that is *not* about a missing field says
+  so instead — "every field this hypothesis needs is present; what the sample
+  does not give is a longer sample" is a different ask, and dressing it up as a
+  field gap would send someone to the client for the wrong thing.
+
+`EventExample` and `build_examples()` sit in the profiler next to `top_values`,
+which is the same job: sample the data so a human can review it. The rejection
+report holds one set of events shared by every card, since the events are a
+property of the sample and not of one hypothesis, while the evidence resolutions
+are per hypothesis. Values are truncated at 160 characters rather than omitted —
+a payload in a URL is the evidence — and wide tables scroll inside their own box
+so the page never scrolls sideways.
+
+Nothing leaves the machine: this renders sample content that was already in
+memory, into a page served on `127.0.0.1` and a file written locally.
+
 ### 1.6 — the decision: read it from the column, refuse when the column is silent
 
 `16/07/2026 20:26:12.030` under `TimeGenerated [Local Time]` was two separate

@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 from engine.classification.rule_type_classifier import ElasticRuleType, RuleTypeDecision
 from engine.matching.candidate import MatchCandidate, MatchSource
 from engine.prediction.backtest import PredictionResult
-from engine.profiling.field_profiler import LogFingerprint
+from engine.profiling.field_profiler import EventExample, LogFingerprint
 from engine.storage.taxonomy_store import TaxonomyEntry
 
 # Rule types Elastic expresses as a base query plus rule configuration, rather
@@ -310,6 +310,7 @@ def _render(
         f"| Log source | {triple} |",
         f"| Data category | {fingerprint.data_category.value if fingerprint.data_category else 'unknown'} |",
         f"| Severity (from rule) | {candidate.level or 'not stated'} |",
+        f"| Event time | {_event_time_summary(fingerprint)} |",
         "",
         "## Data source and field dependencies",
         "",
@@ -401,11 +402,13 @@ def _render(
             + (f", producing **{result.alerts}** alert(s) after aggregation" if result.alerts != result.matched_events else "")
             + f" ({result.match_rate:.1%} of events)."
         )
-        if result.example_lines:
-            lines.append(f"Matching sample lines: {', '.join(str(line) for line in result.example_lines)}.")
         if result.aggregation_note:
             lines.append("")
             lines.append(result.aggregation_note)
+        if result.examples:
+            lines.extend(_matched_events(result.examples, fingerprint))
+        elif result.example_lines:
+            lines.append(f"Matching sample lines: {', '.join(str(line) for line in result.example_lines)}.")
     else:
         lines.append(f"The logic could not be executed against the sample: {result.unsupported_reason}.")
     lines.append("")
@@ -461,6 +464,101 @@ def _render(
     ])
 
     return "\n".join(lines)
+
+
+def _event_time_summary(fingerprint: LogFingerprint) -> str:
+    """Which column the rule will be time-scoped on, and whether it can be read."""
+    source = fingerprint.timestamp_source()
+    if source is None:
+        return "no timestamp column found in this sample"
+    detail = f"`{source.description}`"
+    if source.granularity != "unknown":
+        detail += f" ({source.granularity} granularity)"
+    if not source.is_readable:
+        detail += " - present, but not readable as written"
+    elif source.is_split:
+        detail += " - split across two columns"
+    return detail
+
+
+def _matched_events(examples: Sequence[EventExample], fingerprint: LogFingerprint) -> list[str]:
+    """The events the logic fired on, so the reviewer checks evidence not a count.
+
+    A wide table across the key fields first, because the question a reviewer
+    asks is whether the *pattern* is really the behaviour claimed. Then one
+    event in full, because the pattern can look right while the event around it
+    says otherwise.
+    """
+    source = fingerprint.timestamp_source()
+    columns = list(dict.fromkeys(name for example in examples for name, _ in example.key_fields))
+    # Driven by the events rather than by the fingerprint: if the events carry a
+    # time, it belongs in the table whatever the fingerprint concluded.
+    show_time = any(example.raw_timestamp for example in examples)
+
+    header = ["Line"]
+    if show_time:
+        header.append("Event time" + (f" ({source.description})" if source is not None else ""))
+    header.extend(f"`{name}`" for name in columns)
+
+    lines = [
+        "",
+        "### Matched events",
+        "",
+        "| " + " | ".join(header) + " |",
+        "|" + "---|" * len(header),
+    ]
+    for example in examples:
+        values = dict(example.key_fields)
+        row = [str(example.line)]
+        if show_time:
+            row.append(_event_time_cell(example))
+        row.extend(_cell(values.get(name)) for name in columns)
+        lines.append("| " + " | ".join(row) + " |")
+
+    first = examples[0]
+    if first.other_fields:
+        lines.extend([
+            "",
+            f"Line {first.line} in full, for the context the columns above leave out:",
+            "",
+            "| Field | Value |",
+            "|---|---|",
+        ])
+        lines.extend(
+            f"| `{name}` | {_cell(value)} |"
+            for name, value in first.key_fields + first.other_fields
+        )
+        if first.omitted_fields:
+            lines.append(f"| | *and {first.omitted_fields} more field(s)* |")
+    return lines
+
+
+def _event_time_cell(example: EventExample) -> str:
+    """Show the raw value, and the reading of it only when the two differ.
+
+    They differ exactly when the engine had to reinterpret the value - a
+    day-first date, split columns, epoch seconds - which is the case worth
+    putting in front of a reviewer.
+    """
+    raw = example.raw_timestamp or "-"
+    if example.timestamp is None:
+        return f"`{raw}` (unreadable)"
+    if _same_instant_text(raw, example.timestamp):
+        return f"`{raw}`"
+    return f"`{raw}` -> {example.timestamp}"
+
+
+def _same_instant_text(raw: str, iso: str) -> bool:
+    """Whether the raw text already reads as the ISO value, offset spelling aside."""
+    naive = iso.split("+")[0]
+    normalised = raw.strip().rstrip("Zz").replace(" ", "T")
+    return naive.startswith(normalised) or normalised.startswith(naive)
+
+
+def _cell(value: str | None) -> str:
+    if value is None or value == "":
+        return "-"
+    return "`" + value.replace("|", "\\|").replace("`", "'") + "`"
 
 
 def _rule_configuration(elastic_type: ElasticRuleType, entry: TaxonomyEntry | None) -> list[str]:

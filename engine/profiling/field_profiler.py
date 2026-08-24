@@ -22,6 +22,12 @@ from engine.profiling.data_classifier import Classification, DataCategory
 from engine.profiling.entity_recognition import EntityType, detect_entity_type
 
 DEFAULT_TOP_N = 5
+# Enough events to see a pattern, few enough to read. Raising this makes every
+# card and every runbook longer for diminishing evidence.
+DEFAULT_EXAMPLE_EVENTS = 5
+# Long enough for a URL with a payload in it, short enough not to wreck a table.
+EXAMPLE_VALUE_MAX = 160
+EXAMPLE_OTHER_FIELDS_MAX = 14
 
 _BOOL_VALUES = {"true", "false", "yes", "no"}
 _INT_RE = re.compile(r"^[+-]?\d+$")
@@ -164,6 +170,28 @@ class TimestampSource(BaseModel):
         return parse_timestamp(fields.get(self.field_name or ""), date_order=self.date_order)
 
 
+class EventExample(BaseModel):
+    """One sample event, kept so a reviewer can see what a verdict rests on.
+
+    "Matched 5 of 37 events" is a number. The five events are the evidence, and
+    a reviewer who cannot see them is being asked to trust the count. The same
+    holds on the rejection path, where the events show what the sample *does*
+    carry next to the list of what it does not.
+    """
+
+    line: int
+    # Resolved event time, ISO-8601 UTC. None when the sample has no readable one.
+    timestamp: str | None = None
+    # The same value exactly as the sample wrote it, so a reader can see the
+    # format the engine had to interpret rather than only the interpretation.
+    raw_timestamp: str | None = None
+    # Fields the verdict turned on, first. Ordered pairs rather than a dict so
+    # the order a reviewer reads them in is the order they were declared.
+    key_fields: list[tuple[str, str]] = Field(default_factory=list)
+    other_fields: list[tuple[str, str]] = Field(default_factory=list)
+    omitted_fields: int = 0
+
+
 class LogFingerprint(BaseModel):
     """What the sample is, structurally: the input to matching."""
 
@@ -255,6 +283,73 @@ def profile_fields(
         )
 
     return profiles
+
+
+def build_examples(
+    records: Sequence[LogRecord],
+    *,
+    source: TimestampSource | None = None,
+    key_fields: Sequence[str] = (),
+    limit: int = DEFAULT_EXAMPLE_EVENTS,
+) -> list[EventExample]:
+    """Keep the first ``limit`` records as reviewable evidence.
+
+    ``key_fields`` are the columns the verdict turned on — the ones a rule
+    matched against, or the ones a hypothesis needed. They lead, because the
+    reader is checking those specifically; everything else follows as context.
+
+    Blank fields are dropped. On a Cloudflare row most columns are empty, and a
+    table of thirty dashes hides the four values that matter.
+    """
+    time_fields = set(source.fields) if source is not None else set()
+    # Event time gets its own column; repeating it as a key field would print the
+    # same value twice in every row.
+    wanted = list(dict.fromkeys(name for name in key_fields if name and name not in time_fields))
+
+    examples: list[EventExample] = []
+    for record in records[:limit]:
+        key: list[tuple[str, str]] = []
+        for name in wanted:
+            value = record.fields.get(name)
+            if not _is_blank(value):
+                key.append((name, _shorten(value)))
+
+        other: list[tuple[str, str]] = []
+        omitted = 0
+        for name, value in record.fields.items():
+            if name in wanted or name in time_fields or _is_blank(value):
+                continue
+            if len(other) < EXAMPLE_OTHER_FIELDS_MAX:
+                other.append((str(name), _shorten(value)))
+            else:
+                omitted += 1
+
+        moment = source.resolve(record.fields) if source is not None else None
+        examples.append(
+            EventExample(
+                line=record.line,
+                timestamp=moment.isoformat() if moment else None,
+                raw_timestamp=_raw_timestamp(record, source),
+                key_fields=key,
+                other_fields=other,
+                omitted_fields=omitted,
+            )
+        )
+    return examples
+
+
+def _raw_timestamp(record: LogRecord, source: TimestampSource | None) -> str | None:
+    """The event time exactly as the sample wrote it, split columns joined."""
+    if source is None:
+        return None
+    parts = [str(record.fields.get(name, "")).strip() for name in source.fields]
+    joined = " ".join(part for part in parts if part)
+    return joined or None
+
+
+def _shorten(value: Any) -> str:
+    text = str(value).strip()
+    return text if len(text) <= EXAMPLE_VALUE_MAX else text[: EXAMPLE_VALUE_MAX - 1] + "…"
 
 
 def build_fingerprint(

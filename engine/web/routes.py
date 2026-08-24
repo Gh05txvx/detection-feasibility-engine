@@ -41,6 +41,8 @@ templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 # not a warning. base.html calls it defensively, so an older server that lacks
 # this global still renders, just without the banner.
 templates.env.globals["engine_is_stale"] = staleness.watch.is_stale
+# One spelling of an elapsed time across the pages and the downloaded markdown.
+templates.env.globals["span"] = rejection_report.humanise_span
 
 router = APIRouter()
 
