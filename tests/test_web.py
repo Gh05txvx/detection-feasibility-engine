@@ -326,10 +326,35 @@ def test_no_match_sample_shows_the_rejection_report(client):
     assert "No match" in response.text
     assert "not the same as" in response.text
     assert "Onboarding requirements" in response.text
+    assert "Download this hypothesis" in response.text
 
     download = client.get(f"/jobs/{job_id}/report")
     assert download.status_code == 200
     assert "# Detection feasibility: rejection report" in download.text
+
+
+def test_one_hypothesis_downloads_on_its_own(client):
+    """What you hand a client is one onboarding ask, not a report to search."""
+    job_id = _upload(client, APPLIANCE).headers["location"].rsplit("/", 1)[-1]
+
+    response = client.get(f"/jobs/{job_id}/hypothesis/0")
+
+    assert response.status_code == 200
+    assert response.text.startswith("# Detection feasibility: ")
+    assert "## What this needs" in response.text
+    assert "text/markdown" in response.headers["content-type"]
+    disposition = response.headers["content-disposition"]
+    assert disposition.startswith("attachment;")
+    assert "rejection-" in disposition and disposition.endswith('.md"')
+
+    assert client.get(f"/jobs/{job_id}/hypothesis/99").status_code == 404
+
+
+def test_a_matched_run_has_no_hypothesis_to_download(client):
+    _seed_taxonomy()
+    job_id = _upload(client, CLOUDFLARE).headers["location"].rsplit("/", 1)[-1]
+
+    assert client.get(f"/jobs/{job_id}/hypothesis/0").status_code == 404
 
 
 def test_status_fragment_redirects_once_the_run_is_done(client):

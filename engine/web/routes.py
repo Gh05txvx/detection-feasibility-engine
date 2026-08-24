@@ -161,10 +161,7 @@ async def runbook(job_id: str, index: int) -> Response:
     if not 0 <= index < len(result.runbooks):
         raise HTTPException(status_code=404, detail="no such runbook")
     document = result.runbooks[index]
-    return PlainTextResponse(
-        document.markdown,
-        headers={"Content-Disposition": f'attachment; filename="runbook-{index + 1}.md"'},
-    )
+    return _markdown(document.markdown, f"runbook-{index + 1}.md")
 
 
 @router.get("/jobs/{job_id}/report", response_class=PlainTextResponse)
@@ -173,9 +170,23 @@ async def rejection(job_id: str) -> Response:
     result = _result_or_404(job)
     if result.rejection is None:
         raise HTTPException(status_code=404, detail="this run produced no rejection report")
-    return PlainTextResponse(
-        rejection_report.render_markdown(result.rejection),
-        headers={"Content-Disposition": 'attachment; filename="rejection-report.md"'},
+    return _markdown(
+        rejection_report.render_markdown(result.rejection), "rejection-report.md"
+    )
+
+
+@router.get("/jobs/{job_id}/hypothesis/{index}", response_class=PlainTextResponse)
+async def hypothesis(job_id: str, index: int) -> Response:
+    """One hypothesis on its own, for handing a client a single onboarding ask."""
+    job = _job_or_404(job_id)
+    result = _result_or_404(job)
+    if result.rejection is None:
+        raise HTTPException(status_code=404, detail="this run produced no rejection report")
+    if not 0 <= index < len(result.rejection.reports):
+        raise HTTPException(status_code=404, detail="no such hypothesis")
+    return _markdown(
+        rejection_report.render_hypothesis_markdown(result.rejection, index),
+        rejection_report.hypothesis_filename(result.rejection, index),
     )
 
 
@@ -238,6 +249,15 @@ def _result_or_404(job: JobRecord) -> PipelineResult:
     if not path.is_file():
         raise HTTPException(status_code=410, detail="the stored result for this run is gone")
     return PipelineResult.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def _markdown(body: str, filename: str) -> Response:
+    """A markdown file the browser saves rather than renders."""
+    return PlainTextResponse(
+        body,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def _safe_filename(name: str) -> str:

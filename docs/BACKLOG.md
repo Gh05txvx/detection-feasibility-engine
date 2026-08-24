@@ -24,7 +24,7 @@ wasting a review cycle. Worth clearing first.
 | 1.2 | ~~**Clean up orphaned jobs at startup.**~~ **Done 2026-08-24.** `job_store.fail_orphaned()` runs when the app is built and fails any run still at `queued` or `running`, since the only process that could ever have finished them is the one that died. The reason says to upload the sample again, and the status page stops polling. | eng | done |
 | 1.3 | **Confirm the seeded taxonomy against the real Cloudflare WAF file.** The two shipped entries were written from the Cloudflare `firewall_events` field set, not ported from the team's actual 15-category taxonomy, which was not in this repo. Their detection logic is structurally sound but unverified. | you | S |
 | 1.4 | **Confirm the WAF `RuleID` values.** `cloudflare-waf-sqli` scopes its WAF branch to rule ID `100015`, taken from the synthetic fixture. Real managed-rule IDs are ruleset-specific and must be checked against a client's WAF config. | you | S |
-| 1.5 | **Download a single hypothesis as markdown.** See below. | eng | S |
+| 1.5 | ~~**Download a single hypothesis as markdown.**~~ **Done 2026-08-24.** Every hypothesis card has its own **Download this hypothesis** button, alongside the whole-report download. See below for what was built. | eng | done |
 
 ### 1.5 — one card, one markdown file
 
@@ -42,22 +42,24 @@ onboarding ask, backed by the reasoning behind it. Sending a five-hypothesis rep
 so they can find the relevant page is a worse deliverable, and editing one out by
 hand before sending it is worse still.
 
-To build:
+Built:
 
-- `render_hypothesis_markdown(report, index)` in `engine/hypothesis/report.py`,
-  reusing the existing per-hypothesis renderer and wrapping it so the file stands
-  alone when it arrives by email: sample name, log source, generated date, the
-  "no automatic match is not the same as not detectable" framing, that
-  hypothesis's own onboarding requirements, and the human-review closing.
-- `GET /jobs/{job_id}/hypothesis/{index}` returning `text/markdown` as an
-  attachment, mirroring the existing `/runbook/{index}` route including its
-  bounds check.
-- A **Download** button on each hypothesis card. Keep the full-report download
-  as well; both are useful.
-- Filename from the behaviour, the way runbooks are named, not `hypothesis-2.md`.
-
-Keep the whole-report download and the per-card download consistent in content:
-the same reasoning, differing only in scope.
+- `render_hypothesis_markdown(report, index)` produces a file that stands alone
+  when it arrives detached from everything around it: sample, log source, sample
+  size, the "no automatic match is not the same as not detectable" framing, the
+  ABLE block, the four checks, the remediation, what it needs, and the review
+  closing. On the appliance fixture that is 2.4 kB against 5.1 kB for the whole
+  report, and it contains nothing about the hypothesis it was not asked for.
+- `GET /jobs/{job_id}/hypothesis/{index}`, mirroring `/runbook/{index}` including
+  its bounds check, serving `text/markdown` as an attachment. All three download
+  routes now go through one helper, so they agree on type and disposition.
+- Filenames come from the behaviour —
+  `rejection-creation-or-modification-of-a-service-scheduled-task-or-star.md` —
+  so a folder of them can be read without opening each one.
+- **Sample-wide ingest asks travel with each hypothesis.** A split `date`/`time`
+  is the source's problem, not one hypothesis's, so `RejectionReport.ingest_requirements`
+  is shared by the combined report and every single-hypothesis export rather than
+  living only in the aggregate.
 
 ## 2. Closing the four open Definitions of Done
 

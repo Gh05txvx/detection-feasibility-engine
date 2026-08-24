@@ -404,7 +404,8 @@ table.kv thead th { position: static; }
 
 .tags { margin-top: 0.3rem; display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center; }
 .candidate .backtest { margin: 0.5rem 0 0; font-size: 0.9rem; }
-.candidate .actions { margin-top: 0.65rem; }
+/* Used by candidate cards and hypothesis cards alike. */
+.actions { margin-top: 0.65rem; }
 
 details.disclosure { margin-top: 0.5rem; }
 

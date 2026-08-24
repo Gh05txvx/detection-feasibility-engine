@@ -11,6 +11,8 @@ from engine.hypothesis.report import (
     VERDICT_FEASIBLE_NO_RULE,
     VERDICT_REJECTED,
     build_report,
+    hypothesis_filename,
+    render_hypothesis_markdown,
     render_markdown,
 )
 from engine.hypothesis.validator import (
@@ -345,6 +347,71 @@ def test_markdown_contains_the_sections_a_reviewer_needs():
         assert heading in markdown
     assert "not the same as not detectable" in markdown
     assert "analyst review" in markdown.lower()
+
+
+def test_a_single_hypothesis_renders_as_a_standalone_document():
+    """It arrives detached from everything around it, so it repeats the context."""
+    fingerprint = _fingerprint([_profile("host")], data_category=DataCategory.SYSTEM_LOGS,
+                               inferred_product="acme_vpn", record_count=18)
+    report = build_report("vpn-sample.csv", fingerprint, sigma_index=_sigma_index("T1543"))
+
+    markdown = render_hypothesis_markdown(report, 0)
+    first, second = report.reports[0], report.reports[1]
+
+    assert markdown.startswith(f"# Detection feasibility: {first.hypothesis.behavior}")
+    assert "vpn-sample.csv" in markdown
+    assert "acme_vpn" in markdown
+    assert "18 events" in markdown
+    assert "not the same as not detectable" in markdown
+    assert "| ABLE | |" in markdown
+    assert "## Validation" in markdown
+    assert "## What this needs" in markdown
+    assert "Analyst review" in markdown
+    # And nothing about the hypothesis it was not asked for.
+    assert second.hypothesis.behavior not in markdown
+
+
+def test_a_single_hypothesis_carries_only_its_own_requirements():
+    fingerprint = _fingerprint([_profile("host")], data_category=DataCategory.SYSTEM_LOGS)
+    report = build_report("sample.csv", fingerprint, sigma_index=_sigma_index("T1543"))
+
+    markdown = render_hypothesis_markdown(report, 0)
+
+    for requirement in report.reports[0].requirements:
+        assert requirement in markdown
+
+
+def test_a_single_hypothesis_still_carries_the_sample_wide_ingest_ask():
+    """Splitting event time is the source's problem, not one hypothesis's."""
+    profiles = [
+        _profile("date", dtype="date", example="2026-07-14"),
+        _profile("time", dtype="time", example="01:02:11"),
+        _profile("user"), _profile("status"),
+        _profile("srcip", entity_type=EntityType.IP),
+    ]
+    fingerprint = _fingerprint(profiles, data_category=DataCategory.AUTHENTICATION_LOGS,
+                               record_count=20)
+    records = [
+        LogRecord(line=index + 2, fields={"date": "2026-07-14", "time": f"01:{index:02d}:11"})
+        for index in range(20)
+    ]
+    report = build_report("split.csv", fingerprint, records=records,
+                          sigma_index=_sigma_index("T1110"))
+
+    markdown = render_hypothesis_markdown(report, 0)
+
+    assert "into @timestamp during ingest" in markdown
+
+
+def test_the_filename_is_taken_from_the_behaviour():
+    fingerprint = _fingerprint([_profile("host")], data_category=DataCategory.SYSTEM_LOGS)
+    report = build_report("sample.csv", fingerprint, sigma_index=_sigma_index("T1543"))
+
+    name = hypothesis_filename(report, 0)
+
+    assert name.startswith("rejection-")
+    assert name.endswith(".md")
+    assert "service" in name or "persistence" in name or "creation" in name
 
 
 def test_low_confidence_classification_is_flagged_in_the_report():

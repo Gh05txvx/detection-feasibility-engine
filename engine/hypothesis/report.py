@@ -16,6 +16,7 @@ Two verdicts are possible, because "rejected" is not always the truth:
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Sequence
 
@@ -61,6 +62,15 @@ class HypothesisReport(BaseModel):
     def failed_checks(self) -> list[ValidationCheck]:
         return [check for check in self.checks if check.status is CheckStatus.FAIL]
 
+    @property
+    def requirements(self) -> list[str]:
+        """This hypothesis's own gaps, deduplicated, in first-seen order."""
+        seen: dict[str, None] = {}
+        for check in self.failed_checks:
+            for item in check.missing:
+                seen.setdefault(item, None)
+        return list(seen)
+
 
 class RejectionReport(BaseModel):
     """The whole document: every hypothesis asked of one sample."""
@@ -72,20 +82,24 @@ class RejectionReport(BaseModel):
     reports: list[HypothesisReport] = Field(default_factory=list)
 
     @property
+    def ingest_requirements(self) -> list[str]:
+        """Asks about how the data arrives rather than about missing fields.
+
+        The data is there; the ingest design has to join it up. Still an ask, and
+        it applies to every hypothesis drawn from this sample, so it belongs on
+        both the whole report and each single-hypothesis export.
+        """
+        if self.context.timestamp_needs_combining:
+            return [f"combine {self.context.timestamp_description} into @timestamp during ingest"]
+        return []
+
+    @property
     def onboarding_requirements(self) -> list[str]:
         """Every distinct gap, in first-seen order: the ask for the client."""
-        seen: dict[str, None] = {}
-        if self.context.timestamp_needs_combining:
-            # Not a missing field: the data is there, but the ingest design has
-            # to join it up. Still an ask, and still belongs on this list.
-            seen.setdefault(
-                f"combine {self.context.timestamp_description} into @timestamp during ingest",
-                None,
-            )
+        seen: dict[str, None] = {item: None for item in self.ingest_requirements}
         for report in self.reports:
-            for check in report.failed_checks:
-                for item in check.missing:
-                    seen.setdefault(item, None)
+            for item in report.requirements:
+                seen.setdefault(item, None)
         return list(seen)
 
     @property
@@ -229,17 +243,85 @@ def render_markdown(report: RejectionReport) -> str:
     return "\n".join(lines)
 
 
-def _render_hypothesis(position: int, report: HypothesisReport) -> list[str]:
-    hypothesis = report.hypothesis
-    verdict_text = (
-        "REJECTED" if report.verdict == VERDICT_REJECTED else "FEASIBLE - no existing rule covers it"
-    )
+def render_hypothesis_markdown(report: RejectionReport, index: int) -> str:
+    """Render one hypothesis as a document that stands on its own.
 
-    lines = [
-        f"## Hypothesis {position}: {hypothesis.behavior}",
+    The whole-report download is the right thing for reviewing a sample. This is
+    the right thing for handing a client a single onboarding ask: sending five
+    hypotheses and asking them to find the relevant one is a worse deliverable,
+    and editing the others out by hand before sending is worse still.
+
+    It repeats the sample, the log source and the framing that the combined
+    report states once, because this file has to make sense on its own when it
+    arrives detached from everything around it.
+    """
+    item = report.reports[index]
+    hypothesis = item.hypothesis
+    fingerprint = report.fingerprint
+    triple = " / ".join(
+        part or "?" for part in
+        (fingerprint.inferred_category, fingerprint.inferred_product, fingerprint.inferred_service)
+    )
+    category = fingerprint.data_category.value if fingerprint.data_category else "uncategorised"
+
+    lines: list[str] = [
+        f"# Detection feasibility: {hypothesis.behavior}",
         "",
-        f"**Verdict: {verdict_text}**",
+        f"**Verdict: {_verdict_text(item)}**",
         "",
+        f"**Sample:** `{report.sample_path}`  ",
+        f"**Generated:** {report.generated_at}  ",
+        f"**Log source:** {triple} - {category}  ",
+        f"**Sample size:** {report.context.record_count} events",
+        "",
+        "> **No automatic match is not the same as not detectable.** This is one "
+        "hypothesis assessed against one log sample. It says what that sample can and "
+        "cannot support today, and it ends at analyst review.",
+        "",
+        *_able_table(hypothesis),
+        *_coverage_line(hypothesis),
+        "## Validation",
+        "",
+        *_checks_table(item.checks),
+    ]
+
+    if item.remediation:
+        lines.extend([f"**Remediation.** {item.remediation}", ""])
+
+    requirements = list(dict.fromkeys(report.ingest_requirements + item.requirements))
+    lines.extend(["## What this needs", ""])
+    if requirements:
+        lines.extend(f"{position}. {text}" for position, text in enumerate(requirements, start=1))
+    else:
+        lines.append(
+            "Nothing from the client. The data supports this hypothesis; what is missing "
+            "is a rule for it. Author one and add it to the internal taxonomy."
+        )
+    lines.extend([
+        "",
+        "## Next step",
+        "",
+        "Analyst review. Nothing here is deployed and no rule is created from this "
+        "document. Confirm or discard the hypothesis, then either raise the requirements "
+        "above with the client or author the missing detection logic.",
+        "",
+    ])
+
+    return "\n".join(lines)
+
+
+def hypothesis_filename(report: RejectionReport, index: int) -> str:
+    """Name the file after the behaviour, so a folder of them can be read."""
+    slug = re.sub(r"[^a-z0-9]+", "-", report.reports[index].hypothesis.behavior.lower()).strip("-")
+    return f"rejection-{slug[:60] or index + 1}.md"
+
+
+def _verdict_text(report: HypothesisReport) -> str:
+    return "REJECTED" if report.verdict == VERDICT_REJECTED else "FEASIBLE - no existing rule covers it"
+
+
+def _able_table(hypothesis: Hypothesis) -> list[str]:
+    return [
         "| ABLE | |",
         "|---|---|",
         f"| Actor | {hypothesis.actor} |",
@@ -249,20 +331,37 @@ def _render_hypothesis(position: int, report: HypothesisReport) -> list[str]:
         "",
     ]
 
-    if hypothesis.mitre_techniques or hypothesis.implied_rule_type:
-        details = []
-        if hypothesis.mitre_techniques:
-            details.append(f"MITRE: {', '.join(hypothesis.mitre_techniques)}")
-        if hypothesis.implied_rule_type:
-            details.append(f"implied Elastic rule type: {hypothesis.implied_rule_type}")
-        lines.extend([" · ".join(details), ""])
 
-    lines.extend(["| Validation step | Result | Detail |", "|---|---|---|"])
-    for check in report.checks:
+def _coverage_line(hypothesis: Hypothesis) -> list[str]:
+    details = []
+    if hypothesis.mitre_techniques:
+        details.append(f"MITRE: {', '.join(hypothesis.mitre_techniques)}")
+    if hypothesis.implied_rule_type:
+        details.append(f"implied Elastic rule type: {hypothesis.implied_rule_type}")
+    return [" · ".join(details), ""] if details else []
+
+
+def _checks_table(checks: Sequence[ValidationCheck]) -> list[str]:
+    lines = ["| Validation step | Result | Detail |", "|---|---|---|"]
+    for check in checks:
         title = STEP_TITLES.get(check.name, check.name)
         detail = check.detail.replace("|", "\\|")
         lines.append(f"| {title} | {_STATUS_LABELS[check.status]} | {detail} |")
     lines.append("")
+    return lines
+
+
+def _render_hypothesis(position: int, report: HypothesisReport) -> list[str]:
+    hypothesis = report.hypothesis
+    lines = [
+        f"## Hypothesis {position}: {hypothesis.behavior}",
+        "",
+        f"**Verdict: {_verdict_text(report)}**",
+        "",
+        *_able_table(hypothesis),
+        *_coverage_line(hypothesis),
+        *_checks_table(report.checks),
+    ]
 
     if report.remediation:
         lines.extend([f"**Remediation.** {report.remediation}", ""])
