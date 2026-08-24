@@ -221,6 +221,8 @@ five synthetic fixtures covering Cloudflare WAF, FortiGate traffic, Windows
 Security, IIS/W3C access logs, and a deliberately field-poor appliance syslog. It
 has not yet been run against a real client sample.
 
+Everything outstanding, ordered and with owners: **`docs/BACKLOG.md`**.
+
 The honest ceiling, from `docs/BLUEPRINT.md` §10: this is heuristic matching over
 a curated knowledge base. For proprietary or unusual log sources it will often say
 "no automatic match", and that is not the same as "not detectable".
@@ -250,6 +252,7 @@ tests/fixtures/   five sample log formats
 docs/
   BLUEPRINT.md            design rationale, in full
   IMPLEMENTATION_PLAN.md  schemas, phase checklists, and what each phase decided
+  BACKLOG.md              what is left to do, and who can do it
   phase0-smoke-test.md    the original hand trace, kept as evidence
 ```
 

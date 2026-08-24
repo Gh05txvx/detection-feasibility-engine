@@ -1,0 +1,82 @@
+# Backlog
+
+Everything outstanding, as of 2026-08-24. All seven phases are built and 229 tests
+pass; what is left is mostly validation that needs real project data, plus a short
+list of engineering work that protects that validation.
+
+`docs/IMPLEMENTATION_PLAN.md` holds the per-phase detail and the decisions already
+made. This file is the queue.
+
+**Owner** is who can actually do the item: **eng** = can be done from the code,
+**you** = needs the team's data, decisions, or judgement, **both** = a working
+session.
+
+---
+
+## 1. Before the real-data testing starts
+
+Small, and each one exists to stop the validation work producing a wrong answer or
+wasting a review cycle. Worth clearing first.
+
+| # | Task | Owner | Size |
+|---|---|---|---|
+| 1.1 | **Staleness banner.** The server records a fingerprint of `engine/` at startup and warns on every page when the code on disk has changed since. Without it, editing the engine between runs produces results from stale code with nothing to indicate it — a silently wrong number that can reach a SOW. | eng | S |
+| 1.2 | **Clean up orphaned jobs at startup.** A server that dies mid-run leaves the job row at `running` forever and the status page polling forever. Mark `running`/`queued` jobs as failed on boot, with the reason. Already a bug; restarts are about to become frequent. | eng | S |
+| 1.3 | **Confirm the seeded taxonomy against the real Cloudflare WAF file.** The two shipped entries were written from the Cloudflare `firewall_events` field set, not ported from the team's actual 15-category taxonomy, which was not in this repo. Their detection logic is structurally sound but unverified. | you | S |
+| 1.4 | **Confirm the WAF `RuleID` values.** `cloudflare-waf-sqli` scopes its WAF branch to rule ID `100015`, taken from the synthetic fixture. Real managed-rule IDs are ruleset-specific and must be checked against a client's WAF config. | you | S |
+
+## 2. Closing the four open Definitions of Done
+
+This is the critical path. None of it can be substituted with more code.
+
+| # | Task | Owner | Size |
+|---|---|---|---|
+| 2.1 | **Phase 1 DoD — run 3–5 real project samples** through `scripts/cli.py` and review whether the matching results hold up. This is the one that matters most: it tells us whether the whole approach works on real logs rather than on fixtures built for the purpose. | both | M |
+| 2.2 | **Phase 3 DoD — validate the rule-type classifier** against a handful of rule-type decisions analysts actually made on past projects. All seven rows of the blueprint's decision table are encoded as tests, but that validates the encoding, not the outcome. | both | M |
+| 2.3 | **Phase 4 DoD — compare projected alert volume** against live rules of a similar type that are already deployed. Needs the real production log rate per source; without `--log-rate` the projection is an extrapolation from the sample's own span and says so. | you | M |
+| 2.4 | **Phase 5 DoD — use the engine on one real project**, start to handover, still CLI-based. The end-to-end test of whether it saves time or adds a step. | you | L |
+| 2.5 | **Phase 2 review — read a rejection report properly.** The reasoning is generated and the DoD is technically met; whether it *holds up* is a judgement only an analyst can make. Start with `tests/fixtures/minimal_appliance_syslog.csv`. | you | S |
+| 2.6 | **Phase 6 review — have a teammate use the web UI** without being told how. Verified mechanically only. | you | S |
+
+## 3. Coverage, driven by what section 2 finds
+
+Do not do these speculatively. Each should be triggered by a real sample that the
+engine handled badly.
+
+| # | Task | Owner | Size |
+|---|---|---|---|
+| 3.1 | **Port the remaining 13 Cloudflare WAF categories** into `scripts/seeds/internal_taxonomy.json`. Two of fifteen are seeded as a structural proof. | both | M |
+| 3.2 | **Add a CyberArk log source signature.** Deliberately skipped: I could not verify the field names, and a guessed signature that looks authoritative is worse than none. Needs one real sample. | both | S |
+| 3.3 | **Grow the internal taxonomy for sources Sigma does not reach.** The FortiGate fixture produced 1 candidate from 3144 Sigma rules; the appliance syslog produced none. That gap is what the taxonomy exists to close, and it only closes one project at a time. | both | L |
+| 3.4 | **Widen the backtest's supported Sigma constructs.** Rules using anything the evaluator does not implement are reported as not backtested, with the reason — never miscounted. Worth extending once real samples show which constructs actually come up. | eng | M |
+| 3.5 | **Add log source signatures as new formats appear.** Each unrecognised source currently yields a fingerprint with no logsource triple, which means no Sigma rule can be confirmed and everything falls to the hypothesis path. | eng | S each |
+
+## 4. Deferred by the blueprint itself
+
+Not oversights. `docs/BLUEPRINT.md` explicitly places these after the core is proven.
+
+| # | Task | Reference | Size |
+|---|---|---|---|
+| 4.1 | **Atomic Red Team synthetic telemetry** to validate that a rule actually fires against the technique it targets, rather than only backtesting a static sample. | 5.6, "bukan MVP" | L |
+| 4.2 | **Push to Kibana via the Detection Rules API**, manual-trigger only, never automatic. Would still end at the human review checkpoint. | §6, "tahap lanjut" | M |
+| 4.3 | **Package as a single executable** (PyInstaller) so teammates need no Python. Only once the logic has stopped changing. | 8.6, "belakangan" | M |
+| 4.4 | **Map to frameworks beyond MITRE ATT&CK** — NIST CSF, CIS Controls, D3FEND. The matching structure was kept generic for this. | §3 | M |
+
+## 5. Hygiene
+
+| # | Task | Owner | Size |
+|---|---|---|---|
+| 5.1 | **Upload retention.** `data/uploads/` keeps every uploaded sample forever. These are client logs; they should expire, or at least be prunable from the UI. | eng | S |
+| 5.2 | **Corpus refresh cadence.** The blueprint asks for periodic refreshes of the Sigma and integrations clones. `scripts\setup.ps1` refreshes them, but nothing prompts anyone to run it. A staleness note on the results page would be enough. | eng | S |
+| 5.3 | **Clear the verification runs** left in the local job history from UI testing. Cosmetic; they are visible in History. | eng | S |
+
+---
+
+## Not on this list, deliberately
+
+- **Auto-reload for the dev server.** It restarts the process on any file change,
+  which kills a job running in the background. That contradicts the batch/async
+  principle in `docs/BLUEPRINT.md` §3 and trades a visible failure for an invisible
+  one. Item 1.1 addresses the same problem without that cost.
+- **Anything that would put an LLM in the matching path.** Non-negotiable.
+- **Anything that sends log content off the machine.** Non-negotiable.
