@@ -472,11 +472,46 @@ is a property of the fingerprint rather than of either matcher.
 ### Phase 4 — Prediction & backtest
 **Objective:** estimate rule performance before it's ever created in Kibana, so noisy candidates get flagged early.
 
-- [ ] `engine/prediction/backtest.py` — run candidate rule logic against the raw sample, count matches
-- [ ] Volume extrapolation (given an estimated log rate, or derived from the sample's time range)
-- [ ] Confidence tier scoring — combine matching confidence, field completeness, and backtest result
+- [x] `engine/prediction/backtest.py` — run candidate rule logic against the raw sample, count matches
+- [x] Volume extrapolation (given an estimated log rate, or derived from the sample's time range)
+- [x] Confidence tier scoring — combine matching confidence, field completeness, and backtest result
 
 **Definition of done:** estimated alert volume isn't wildly off from real deployed rules of a similar type.
+
+**Status: code complete, Definition of Done NOT met (2026-08-24).** The DoD compares the
+estimate against real deployed rules, and there are none to compare against yet. What
+*is* verified: the engine reproduces the Phase 0 hand count exactly — the seeded SQLi
+entry matches 5 of 37 events at lines 6-10, the same five attempts traced manually
+before any matching code existed. That validates the backtest. It says nothing about
+the volume projection, which is what the DoD is actually about.
+
+Decisions that shape the numbers:
+
+- **Alert volume is not event count.** A threshold rule needing 20 failed logins
+  produces one alert, not twenty. Aggregated candidates are bucketed by their own
+  group-by and window first. On the Cloudflare fixture the credential-stuffing entry
+  matches 17 events and produces **0** alerts, because 20-in-5-minutes is never
+  reached — a naive count would have reported 17 and been wrong about the only number
+  anyone cares about. Tumbling windows approximate Elastic's sliding evaluation; the
+  note says so.
+- **A projection is labelled with whether to believe it.** Trustworthy needs both
+  enough events to measure a rate (100+) and either a client-stated log rate or a
+  sample spanning an hour or more. Without that, the confidence tier is capped at
+  medium: claiming high confidence in a rule whose running cost is unknown would be
+  the more useful-looking answer and the wrong one.
+- **Two separate noise signals.** Match rate above 5% flags logic that describes
+  normal traffic — but only on samples of 100+ events, because 2 hits in a 37-event
+  fixture is 5.4% and that is arithmetic, not evidence. Separately, a *trustworthy*
+  projection above 100 alerts/day is flagged unworkable and forced to low tier,
+  regardless of match rate.
+- **Sigma rules are executed from pySigma's parsed condition tree**, not re-parsed by
+  hand: AND/OR/NOT nodes, field expressions, and fieldless keyword search over the
+  whole event, with field names bridged through ECS exactly as matching does. Rules
+  using constructs the evaluator does not implement are reported as not backtested,
+  with the reason. They are never silently counted as zero matches.
+- **Taxonomy conditions are walked as an AST, never evaluated.** Only boolean
+  structure over known block names can run, so a condition string cannot reach
+  anything executable. There is a test that tries.
 
 ### Phase 5 — Runbook generator + workflow integration
 **Objective:** produce a review-ready artifact analysts actually use, and make the CLI pipeline standard practice at project kickoff.

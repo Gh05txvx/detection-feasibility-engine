@@ -172,6 +172,27 @@ def build_rule_index(corpus_path: str | Path, *, fingerprint: str | None = None)
     )
 
 
+def load_rule(index: SigmaRuleIndex, relative_path: str) -> object | None:
+    """Re-parse one rule file, for the backtester that needs its full logic.
+
+    The index deliberately keeps only what matching needs, so the detection tree
+    is read back on demand. Parsing a handful of files costs milliseconds; keeping
+    every parsed rule in the cache would not.
+    """
+    if not relative_path:
+        return None
+
+    from sigma.rule import SigmaRule  # imported lazily, like the ruleset loader
+
+    path = Path(index.corpus_path).parent / relative_path
+    if not path.is_file():
+        return None
+    try:
+        return SigmaRule.from_yaml(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - an unparsable rule is reported, not fatal
+        return None
+
+
 def _detection_fields(rule) -> tuple[set[str], bool]:
     fields: set[str] = set()
     has_keywords = False

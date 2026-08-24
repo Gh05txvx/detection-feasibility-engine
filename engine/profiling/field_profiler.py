@@ -11,6 +11,7 @@ carry the detection. See docs/phase0-smoke-test.md §9.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Any, Iterable, Sequence
 
 import pandas as pd
@@ -66,6 +67,17 @@ class LogFingerprint(BaseModel):
     def profile_for(self, field_name: str) -> FieldProfile | None:
         for profile in self.profiles:
             if profile.field_name == field_name:
+                return profile
+        return None
+
+    def timestamp_profile(self) -> FieldProfile | None:
+        """The field carrying event time, by inferred type first, ECS name second."""
+        for profile in self.profiles:
+            if profile.dtype == "timestamp":
+                return profile
+        for profile in self.profiles:
+            ecs_name = profile.field_name if profile.is_ecs_compliant else profile.suggested_ecs_field
+            if ecs_name == "@timestamp":
                 return profile
         return None
 
@@ -149,6 +161,29 @@ def build_fingerprint(
         classification_confidence=classification.confidence,
         classification_evidence=list(classification.evidence),
     )
+
+
+def parse_timestamp(value: Any) -> datetime | None:
+    """Parse an event timestamp, accepting ISO-8601 and epoch seconds/millis.
+
+    Naive timestamps are read as UTC. Log exports rarely carry an offset, and
+    guessing local time would silently shift every window calculation.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        if text.isdigit() and len(text) in (10, 13):
+            seconds = int(text) / (1000 if len(text) == 13 else 1)
+            return datetime.fromtimestamp(seconds, tz=timezone.utc)
+        return None
+
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
 def _ordered_columns(columns: Iterable[Any], field_names: Sequence[str] | None) -> list[Any]:

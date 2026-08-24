@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import textwrap
 from pathlib import Path
 from typing import Sequence
 
@@ -27,6 +28,8 @@ from engine.matching import sigma_matcher, taxonomy_matcher  # noqa: E402
 from engine.matching.candidate import MatchCandidate  # noqa: E402
 from engine.profiling import ecs_gap  # noqa: E402
 from engine.profiling.data_classifier import classify  # noqa: E402
+from engine.prediction import backtest as prediction  # noqa: E402
+from engine.prediction.backtest import PredictionResult  # noqa: E402
 from engine.profiling.field_profiler import LogFingerprint, build_fingerprint, profile_fields  # noqa: E402
 from engine.storage.taxonomy_store import TaxonomyEntry  # noqa: E402
 
@@ -76,6 +79,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         for candidate in candidates
     }
 
+    # Backtesting re-reads rule files and runs logic over every record, so it is
+    # done only for the candidates actually shown.
+    predictions: dict[str, PredictionResult] = {}
+    for candidate in candidates[: args.top]:
+        entry = entries_by_slug.get(candidate.rule_ref.removeprefix("internal:"))
+        sigma_rule = (
+            sigma_matcher.load_rule(rule_index, candidate.rule_path or "")
+            if entry is None and rule_index is not None else None
+        )
+        predictions[candidate.rule_ref] = prediction.predict(
+            candidate,
+            sample.records,
+            fingerprint,
+            sigma_rule=sigma_rule,
+            taxonomy_entry=entry,
+            log_rate_per_day=args.log_rate,
+        )
+
     # NO MATCH is the hypothesis module's path, not a dead end (BLUEPRINT 5.5).
     rejection = None
     if not candidates:
@@ -96,14 +117,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         out_path.write_text(markdown, encoding="utf-8")
 
     if args.json:
-        _emit_json(sample, fingerprint, gap, candidates, rule_index, rejection, decisions)
+        _emit_json(sample, fingerprint, gap, candidates, rule_index, rejection, decisions, predictions)
         return 0
 
     _report_sample(sample)
     _report_fingerprint(fingerprint)
     _report_fields(fingerprint)
     _report_ecs_gap(gap)
-    _report_candidates(candidates, rule_index, fingerprint, args.top, decisions, len(entries))
+    _report_candidates(candidates, rule_index, fingerprint, args.top, decisions, predictions, len(entries))
     if markdown:
         print()
         print(RULE)
@@ -143,6 +164,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     )
     arg_parser.add_argument("--json", action="store_true", help="emit machine-readable JSON instead of a report")
     arg_parser.add_argument("--out", default=None, help="write the rejection report markdown to this path")
+    arg_parser.add_argument(
+        "--log-rate", type=float, default=None,
+        help="expected production volume in events/day; without it, alert volume is extrapolated "
+             "from the sample's own time span, which is unreliable for short samples",
+    )
     arg_parser.add_argument("--rebuild-index", action="store_true", help="rebuild the cached corpus indexes")
     arg_parser.add_argument("--sigma-corpus", default=None, help="path to the Sigma rules directory")
     arg_parser.add_argument("--integrations", default=None, help="path to the elastic/integrations clone")
@@ -246,6 +272,7 @@ def _report_candidates(
     fingerprint: LogFingerprint,
     top: int,
     decisions: dict[str, RuleTypeDecision],
+    predictions: dict[str, PredictionResult],
     taxonomy_size: int,
 ) -> None:
     print()
@@ -292,12 +319,30 @@ def _report_candidates(
         for assumption in candidate.assumptions:
             print(f"        assumes: {assumption}")
 
+        forecast = predictions.get(candidate.rule_ref)
+        if forecast:
+            result = forecast.backtest
+            if result.evaluated:
+                headline = (
+                    f"      backtest: {result.matched_events}/{result.total_events} events match "
+                    f"({result.match_rate:.1%})"
+                )
+                if result.alerts != result.matched_events:
+                    headline += f", {result.alerts} alert(s) after aggregation"
+                if forecast.projection_basis != "not projectable":
+                    headline += f"  ->  ~{forecast.estimated_alert_volume:,.1f} alerts/day"
+                print(headline + f"   [tier: {forecast.confidence_tier.value}]")
+            else:
+                print(f"      backtest: not run   [tier: {forecast.confidence_tier.value}]")
+            for line in textwrap.wrap(forecast.notes, width=98):
+                print(f"        {line}")
+
     print()
-    print("  Backtest and noise estimate (Phase 4) and the runbook (Phase 5) are not built yet.")
-    print("  Every candidate above still needs analyst review before anything is created in Kibana.")
+    print("  The runbook generator (Phase 5) is not built yet. Every candidate above still needs")
+    print("  analyst review before anything is created in Kibana.")
 
 
-def _emit_json(sample, fingerprint, gap, candidates, rule_index, rejection, decisions) -> None:
+def _emit_json(sample, fingerprint, gap, candidates, rule_index, rejection, decisions, predictions) -> None:
     payload = {
         "sample": {
             "path": sample.path,
@@ -316,6 +361,10 @@ def _emit_json(sample, fingerprint, gap, candidates, rule_index, rejection, deci
                 "rule_type": (
                     decisions[candidate.rule_ref].model_dump(mode="json")
                     if candidate.rule_ref in decisions else None
+                ),
+                "prediction": (
+                    predictions[candidate.rule_ref].model_dump(mode="json")
+                    if candidate.rule_ref in predictions else None
                 ),
             }
             for candidate in candidates

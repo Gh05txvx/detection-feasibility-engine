@@ -21,7 +21,6 @@ reporting one would overstate what was verified.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from enum import Enum
 from typing import Sequence
 
@@ -30,7 +29,7 @@ from pydantic import BaseModel, Field, computed_field
 from engine.hypothesis.able import EvidenceRequirement, Hypothesis
 from engine.ingestion.schemas import LogRecord
 from engine.matching.sigma_matcher import SigmaRuleIndex
-from engine.profiling.field_profiler import FieldProfile, LogFingerprint
+from engine.profiling.field_profiler import LogFingerprint, parse_timestamp
 
 # A behavior judged against "normal" needs enough events and enough elapsed time
 # for "normal" to mean something. These are deliberately blunt: the point is to
@@ -94,7 +93,7 @@ class SampleContext(BaseModel):
 
 def build_context(fingerprint: LogFingerprint, records: Sequence[LogRecord] | None = None) -> SampleContext:
     """Derive timestamp coverage and span once, for reuse across checks."""
-    timestamp_profile = _timestamp_profile(fingerprint)
+    timestamp_profile = fingerprint.timestamp_profile()
     context = SampleContext(
         record_count=fingerprint.record_count,
         timestamp_field=timestamp_profile.field_name if timestamp_profile else None,
@@ -106,7 +105,7 @@ def build_context(fingerprint: LogFingerprint, records: Sequence[LogRecord] | No
 
     moments = []
     for record in records:
-        parsed = _parse_moment(record.fields.get(timestamp_profile.field_name))
+        parsed = parse_timestamp(record.fields.get(timestamp_profile.field_name))
         if parsed is not None:
             moments.append(parsed)
 
@@ -403,17 +402,6 @@ def _same_logsource(rule, fingerprint: LogFingerprint) -> bool:
     return True
 
 
-def _timestamp_profile(fingerprint: LogFingerprint) -> FieldProfile | None:
-    for profile in fingerprint.profiles:
-        if profile.dtype == "timestamp":
-            return profile
-    for profile in fingerprint.profiles:
-        ecs_name = profile.field_name if profile.is_ecs_compliant else profile.suggested_ecs_field
-        if ecs_name == "@timestamp":
-            return profile
-    return None
-
-
 def _free_text_field(fingerprint: LogFingerprint) -> str | None:
     """A high-cardinality string field likely to hold unparsed detail."""
     for profile in fingerprint.profiles:
@@ -424,24 +412,6 @@ def _free_text_field(fingerprint: LogFingerprint) -> str | None:
         if len(profile.example) > 80 and profile.cardinality > 1:
             return profile.field_name
     return None
-
-
-def _parse_moment(value: object) -> datetime | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-
-    try:
-        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        if text.isdigit() and len(text) in (10, 13):
-            seconds = int(text) / (1000 if len(text) == 13 else 1)
-            return datetime.fromtimestamp(seconds, tz=timezone.utc)
-        return None
-
-    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
 def _humanise(seconds: float) -> str:
