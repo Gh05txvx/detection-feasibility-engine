@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Detection Feasibility Engine{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  <header>
+    <a class="brand" href="/">Detection Feasibility&nbsp;Engine</a>
+    <nav>
+      <a href="/">New scan</a>
+      <a href="/history">History</a>
+    </nav>
+  </header>
+
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer>
+    Runs locally on 127.0.0.1. No log data leaves this machine, and nothing here is
+    deployed to Elastic &mdash; every output ends at analyst review.
+  </footer>
+</body>
+</html>

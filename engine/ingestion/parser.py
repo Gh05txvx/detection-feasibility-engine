@@ -58,8 +58,18 @@ def parse(path: str | Path, *, limit: int | None = None) -> ParsedSample:
 
     sample_format = detect_format(path, text)
     if sample_format is SampleFormat.CSV:
-        return _parse_csv(path, text, encoding, limit)
-    return _parse_json_like(path, text, encoding, sample_format, limit)
+        sample = _parse_csv(path, text, encoding, limit)
+    else:
+        sample = _parse_json_like(path, text, encoding, sample_format, limit)
+
+    # A file where every record failed to parse is a failed ingest, not a sample
+    # with nothing in it. Reporting success would send an empty fingerprint all
+    # the way through to a rejection report about a file nobody could read.
+    if not sample.records and not sample.truncated:
+        detail = "; ".join(sample.problems[:3]) or "it has structure but no data rows"
+        raise ParseError(f"{path}: no records could be parsed ({detail})")
+
+    return sample
 
 
 def detect_format(path: Path, text: str) -> SampleFormat:

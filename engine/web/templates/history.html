@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}History{% endblock %}
+{% block content %}
+
+<h1>Run history</h1>
+
+{% if jobs %}
+<p class="lede">Every sample assessed on this machine. Results survive a server restart.</p>
+<table>
+  <thead>
+    <tr><th>Sample</th><th>Started</th><th>Finished</th><th>Status</th><th>Outcome</th></tr>
+  </thead>
+  <tbody>
+  {% for job in jobs %}
+    <tr>
+      <td><a href="/jobs/{{ job.job_id }}">{{ job.filename }}</a></td>
+      <td class="muted">{{ job.created_at }}</td>
+      <td class="muted">{{ job.finished_at or '' }}</td>
+      <td><span class="pill pill-{{ job.status.value }}">{{ job.status.value }}</span></td>
+      <td>
+        {%- if job.result_type == 'runbook' %}candidates found
+        {%- elif job.result_type == 'rejection_report' %}no match, reasoned
+        {%- elif job.error %}<span class="error">{{ job.error }}</span>
+        {%- endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="lede">Nothing assessed yet. <a href="/">Start with a sample.</a></p>
+{% endif %}
+
+{% endblock %}

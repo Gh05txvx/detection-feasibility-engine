@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}Results &mdash; {{ job.filename }}{% endblock %}
+{% block content %}
+
+<h1>{{ job.filename }}</h1>
+<p class="muted">
+  Job {{ job.job_id }} &middot; searched
+  {{ result.sigma_corpus_rules }} Sigma rules and
+  {{ result.taxonomy_entries }} internal taxonomy entr{{ 'y' if result.taxonomy_entries == 1 else 'ies' }}
+</p>
+
+<nav class="steps">
+  <a href="/jobs/{{ job.job_id }}/structure">&larr; 1. Structure &amp; fingerprint</a>
+  <span class="current">2. Matching results</span>
+</nav>
+
+{% if result.candidates %}
+
+<h2>{{ result.candidates | length }} candidate{{ '' if result.candidates | length == 1 else 's' }}</h2>
+
+{% for candidate in result.candidates %}
+  {% set decision = result.rule_types.get(candidate.rule_ref) %}
+  {% set forecast = result.predictions.get(candidate.rule_ref) %}
+  <article class="candidate">
+    <h3>
+      <span class="score">{{ '%.2f' % candidate.confidence }}</span>
+      {{ candidate.title }}
+    </h3>
+    <p class="muted">
+      <code>{{ candidate.rule_ref }}</code>
+      &middot; {{ candidate.source.value }}
+      {%- if candidate.level %} &middot; level {{ candidate.level }}{% endif %}
+      {%- if candidate.mitre_techniques %} &middot; {{ candidate.mitre_techniques | join(', ') }}{% endif %}
+    </p>
+
+    {% if decision %}
+    <p>
+      <span class="pill pill-type">{{ decision.elastic_type.value }}</span>
+      {%- if decision.alternatives %}
+      <span class="muted">also possible:
+        {%- for alternative in decision.alternatives %} {{ alternative.value }}{% endfor %}</span>
+      {%- endif %}
+    </p>
+    <p class="reason">{{ decision.reasoning }}</p>
+    {% for caveat in decision.caveats %}
+    <p class="warn">Caveat: {{ caveat }}</p>
+    {% endfor %}
+    {% endif %}
+
+    <p class="reason">{{ candidate.reasoning }}</p>
+    {% for assumption in candidate.assumptions %}
+    <p class="note">Assumes: {{ assumption }}</p>
+    {% endfor %}
+
+    {% if forecast %}
+      {% set bt = forecast.backtest %}
+      <p class="backtest">
+        {% if bt.evaluated %}
+          <b>{{ bt.matched_events }}</b> of {{ bt.total_events }} sample events match
+          ({{ '%.1f' % (bt.match_rate * 100) }}%)
+          {%- if bt.alerts != bt.matched_events %}, <b>{{ bt.alerts }}</b> alert(s) after aggregation{% endif %}
+          {%- if forecast.projection_basis != 'not projectable' %}
+            &rarr; ~{{ '%.1f' % forecast.estimated_alert_volume }} alerts/day
+          {%- endif %}
+        {% else %}
+          Not backtested.
+        {% endif %}
+        <span class="pill pill-tier-{{ forecast.confidence_tier.value }}">
+          tier {{ forecast.confidence_tier.value }}</span>
+        {%- if forecast.noisy %} <span class="pill pill-failed">noisy</span>{% endif %}
+      </p>
+      <p class="muted small">{{ forecast.notes }}</p>
+    {% endif %}
+
+    {% for runbook in result.runbooks %}
+      {% if runbook.match_candidate.rule_ref == candidate.rule_ref %}
+      <p><a class="button" href="/jobs/{{ job.job_id }}/runbook/{{ loop.index0 }}">Download draft runbook</a></p>
+      {% endif %}
+    {% endfor %}
+  </article>
+{% endfor %}
+
+<p class="note">
+  Every candidate above is a draft for review. Rule type, predicted volume and the runbook
+  are recommendations produced from one sample; none of it is created in Kibana.
+</p>
+
+{% else %}
+
+<h2>No match</h2>
+<p class="lede">
+  No rule in the Sigma corpus and no internal taxonomy entry is satisfiable by this sample.
+  That is not the same as &ldquo;not detectable&rdquo;. The hypothesis module below says what
+  the data would need to support detection, and what to ask the client for.
+</p>
+<p><a class="button" href="/jobs/{{ job.job_id }}/report">Download the rejection report</a></p>
+<pre class="report">{{ rejection_markdown }}</pre>
+
+{% endif %}
+
+{% endblock %}

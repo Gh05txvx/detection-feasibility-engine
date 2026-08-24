@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block content %}
+
+<h1>Assess a log sample</h1>
+<p class="lede">
+  Drop a raw log sample below. The engine profiles its fields, works out which Elastic
+  integration covers it, and reports which detection rules could realistically be built
+  from it &mdash; or, if none can, why not and what is missing.
+</p>
+
+<form id="upload-form" action="/upload" method="post" enctype="multipart/form-data">
+  <label id="dropzone" for="file-input">
+    <strong>Drop a CSV, JSON, or JSONL sample here</strong>
+    <span>or click to choose a file</span>
+    <span id="chosen" class="chosen"></span>
+    <input id="file-input" type="file" name="file" accept=".csv,.json,.jsonl,.ndjson,.log,.txt" required>
+  </label>
+  <button type="submit">Assess this sample</button>
+</form>
+
+<p class="hint">
+  Accepts a client discovery sample or an Elasticsearch <code>_search</code> export whose
+  fields are not ECS-normalised yet. Matching runs against
+  {{ taxonomy_size }} internal taxonomy entr{{ 'y' if taxonomy_size == 1 else 'ies' }}
+  and the local Sigma corpus.
+</p>
+
+{% if recent %}
+<h2>Recent runs</h2>
+<table>
+  <thead><tr><th>Sample</th><th>Started</th><th>Status</th></tr></thead>
+  <tbody>
+  {% for job in recent %}
+    <tr>
+      <td><a href="/jobs/{{ job.job_id }}">{{ job.filename }}</a></td>
+      <td class="muted">{{ job.created_at }}</td>
+      <td><span class="pill pill-{{ job.status.value }}">{{ job.status.value }}</span></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<script>
+  // HTML5 drag and drop, wired to the plain file input so the form still works
+  // without any of this.
+  (function () {
+    const zone = document.getElementById('dropzone');
+    const input = document.getElementById('file-input');
+    const chosen = document.getElementById('chosen');
+
+    function show() {
+      chosen.textContent = input.files.length ? input.files[0].name : '';
+    }
+
+    input.addEventListener('change', show);
+
+    ['dragenter', 'dragover'].forEach(function (event) {
+      zone.addEventListener(event, function (e) {
+        e.preventDefault();
+        zone.classList.add('over');
+      });
+    });
+    ['dragleave', 'drop'].forEach(function (event) {
+      zone.addEventListener(event, function (e) {
+        e.preventDefault();
+        zone.classList.remove('over');
+      });
+    });
+    zone.addEventListener('drop', function (e) {
+      if (e.dataTransfer.files.length) {
+        input.files = e.dataTransfer.files;
+        show();
+      }
+    });
+  })();
+</script>
+
+{% endblock %}

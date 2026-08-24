@@ -1,0 +1,21 @@
+<div id="status"
+     {% if not job.finished %}hx-get="/jobs/{{ job.job_id }}/status"
+     hx-trigger="every 1s"
+     hx-swap="outerHTML"{% endif %}>
+
+  {% if job.status.value == 'failed' %}
+    <p class="pill pill-failed">failed</p>
+    <p class="error">{{ job.error or 'No reason was recorded.' }}</p>
+    <p><a href="/">Try another sample</a></p>
+  {% elif job.status.value == 'done' %}
+    <p class="pill pill-done">done</p>
+    <p><a href="/jobs/{{ job.job_id }}/structure">View the results</a></p>
+  {% else %}
+    <p class="pill pill-{{ job.status.value }}">{{ job.status.value }}</p>
+    <p class="muted">
+      Profiling fields, matching against the Sigma corpus and internal taxonomy,
+      backtesting candidates. The first run after a corpus refresh rebuilds the
+      indexes and takes about a minute.
+    </p>
+  {% endif %}
+</div>

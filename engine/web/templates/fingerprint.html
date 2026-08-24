@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Structure &mdash; {{ job.filename }}{% endblock %}
+{% block content %}
+
+{% set fp = result.fingerprint %}
+{% set gap = result.ecs_gap %}
+
+<h1>{{ job.filename }}</h1>
+<p class="muted">
+  Job {{ job.job_id }} &middot; {{ result.sample.record_count }} records,
+  {{ result.sample.field_count }} fields &middot; {{ result.sample.format }}
+  {%- if result.sample.truncated %} (truncated){% endif %}
+</p>
+
+<nav class="steps">
+  <span class="current">1. Structure &amp; fingerprint</span>
+  <a href="/jobs/{{ job.job_id }}/results">2. Matching results &rarr;</a>
+</nav>
+
+<h2>Fingerprint</h2>
+<table class="kv">
+  <tr><th>Log source</th><td>
+    {{ fp.inferred_category or '?' }} / {{ fp.inferred_product or '?' }} / {{ fp.inferred_service or '?' }}
+    <span class="muted">(category / product / service)</span>
+  </td></tr>
+  <tr><th>Data category</th><td>{{ fp.data_category.value if fp.data_category else 'unknown' }}</td></tr>
+  <tr><th>Confidence</th><td>{{ fp.classification_confidence }}</td></tr>
+  {% for line in fp.classification_evidence %}
+  <tr><th>Evidence</th><td class="muted">{{ line }}</td></tr>
+  {% endfor %}
+</table>
+
+<h2>ECS gap</h2>
+{% if gap.integration %}
+  <p>
+    <strong>Official integration:</strong> {{ gap.integration.name }}
+    {%- if gap.integration.title %} ({{ gap.integration.title }}){% endif %},
+    recognising {{ gap.integration.matched_fields | length }} of this sample's fields
+    ({{ '%.0f' % (gap.integration.coverage * 100) }}% coverage).
+  </p>
+{% else %}
+  <p><strong>No official integration</strong> matches this field set.</p>
+{% endif %}
+<ul class="counts">
+  <li><b>{{ gap.compliant_fields | length }}</b> already ECS</li>
+  <li><b>{{ gap.mapped_fields | length }}</b> mapped by the integration</li>
+  <li><b>{{ gap.suggested_fields | length }}</b> heuristic suggestions</li>
+  <li><b>{{ gap.unmapped_fields | length }}</b> unmapped</li>
+</ul>
+{% for note in gap.notes %}
+<p class="note">{{ note }}</p>
+{% endfor %}
+
+<h2>Fields</h2>
+{% if result.sample.decoded_records %}
+<p class="hint">
+  {{ result.sample.decoded_records }} record(s) carried URL-encoded values, decoded at ingestion.
+  The original text is kept alongside.
+</p>
+{% endif %}
+<table>
+  <thead>
+    <tr><th>Field</th><th>Type</th><th class="num">Cardinality</th><th class="num">Null rate</th>
+        <th>Entity</th><th>ECS</th></tr>
+  </thead>
+  <tbody>
+  {% for profile in fp.profiles %}
+    <tr>
+      <td><code>{{ profile.field_name }}</code></td>
+      <td>{{ profile.dtype }}</td>
+      <td class="num">{{ profile.cardinality }}</td>
+      <td class="num">{{ '%.2f' % profile.null_rate }}</td>
+      <td>{{ profile.entity_type.value if profile.entity_type else '' }}</td>
+      <td>
+        {%- if profile.is_ecs_compliant %}<span class="ok">already ECS</span>
+        {%- elif profile.suggested_ecs_field %}<code>{{ profile.suggested_ecs_field }}</code>
+        {%- else %}<span class="muted">unmapped</span>{% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% for problem in result.sample.problems %}
+<p class="error">{{ problem }}</p>
+{% endfor %}
+
+<p class="next"><a class="button" href="/jobs/{{ job.job_id }}/results">See matching results &rarr;</a></p>
+
+{% endblock %}

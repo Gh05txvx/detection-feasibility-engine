@@ -550,10 +550,44 @@ draft runbook per candidate.
 ### Phase 6 — Local web UI
 **Objective:** wrap the now-validated engine with the UI layer described in `docs/BLUEPRINT.md` Section 8. Only start this once Phase 5's Definition of Done is met.
 
-- [ ] `engine/storage/job_store.py` — `job_runs` CRUD
-- [ ] `engine/web/serve.py` — FastAPI app, bound to `127.0.0.1` only
-- [ ] `engine/web/routes.py` — upload / structure / results / history routes
-- [ ] Jinja2 + htmx templates for the 4-page flow (Section 8.4)
-- [ ] `run.bat` — launcher with venv activation, port check, auto browser-open
+- [x] `engine/storage/job_store.py` — `job_runs` CRUD
+- [x] `engine/web/serve.py` — FastAPI app, bound to `127.0.0.1` only
+- [x] `engine/web/routes.py` — upload / structure / results / history routes
+- [x] Jinja2 + htmx templates for the 4-page flow (Section 8.4)
+- [x] `run.bat` — launcher with venv activation, port check, auto browser-open
 
 **Definition of done:** a teammate can use the tool without knowing how to run a Python script — double-click the launcher only.
+
+**Status: built and verified mechanically (2026-08-24).** `run.bat` was launched end to
+end: it starts the server, serves all four pages and both static assets, and a second
+launch on a busy port opens the browser at the running instance instead of failing, per
+`docs/BLUEPRINT.md` 8.1. Whether a *teammate* can actually use it is a question only a
+teammate can answer.
+
+**Sequencing note.** This phase was gated on Phase 5's Definition of Done, which needs a
+real project and is still open. The gate was waived deliberately: the instruction was to
+finish all phases before testing with real data. The engine core was stable when the UI
+was built (202 tests green), so the risk the gate exists to prevent — building UI on
+shifting logic — did not materialise. It is recorded here so nobody later reads the
+ticked boxes as the gate having been met.
+
+Decisions:
+
+- **`127.0.0.1` is hard-coded, not a setting.** There is no `--host`. A test reads
+  `serve.py` and fails if the string `0.0.0.0` ever appears in it, because this is the
+  constraint that keeps a client's raw logs off the network, and a config option is
+  exactly how it would eventually get flipped.
+- **htmx is vendored into `engine/web/static/`, not loaded from a CDN.** A CDN tag would
+  make the tool useless air-gapped and would leak a request on every page view. A test
+  asserts the rendered page contains no external URL.
+- **Two dependencies added, both flagged:** `python-multipart` (FastAPI cannot parse
+  a file upload without it — runtime) and `httpx2` (Starlette's TestClient needs an HTTP
+  client, and Starlette 1.6 deprecates plain `httpx` in favour of it — tests only).
+- Finished runs are written to `data/jobs/<id>.json` and the `job_runs` row points at
+  them, so history survives a restart and the database stays small.
+- Uploads are size-capped and filenames are reduced to a bare basename before touching
+  disk; a test tries `../../etc/passwd`.
+- **A real ingestion defect surfaced here.** An unparsable JSON upload produced a
+  zero-record sample and the job reported *success*, complete with a rejection report
+  about a file nobody could read. `parser.parse()` now raises when no record could be
+  parsed at all, while still tolerating some bad lines among good ones.
