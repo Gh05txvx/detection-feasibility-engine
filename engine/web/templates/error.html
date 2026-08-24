@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}{{ heading }}{% endblock %}
+{% block content %}
+
+<h1>{{ heading }}</h1>
+
+{% if message %}
+<div class="card">
+  <p style="margin-top:0"><code>{{ message }}</code></p>
+</div>
+{% endif %}
+
+{% if hint %}
+<blockquote class="callout warn">
+  <p>{{ hint }}</p>
+</blockquote>
+{% endif %}
+
+<p style="margin-top:1.4rem">
+  <a class="button" href="/">Start a new scan</a>
+  <a class="button ghost" href="/history">History</a>
+</p>
+
+{% if show_traceback_note %}
+<p class="hint">
+  The full traceback is in the terminal window running <code>run.bat</code>. Nothing was
+  sent anywhere; this page is generated locally.
+</p>
+{% endif %}
+
+{% endblock %}

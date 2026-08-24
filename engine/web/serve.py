@@ -33,6 +33,7 @@ def create_app():
     """Build the FastAPI application."""
     from fastapi import FastAPI
     from fastapi.staticfiles import StaticFiles
+    from starlette.exceptions import HTTPException as StarletteHTTPException
 
     from engine.web.routes import STATIC_DIR, router
 
@@ -44,7 +45,61 @@ def create_app():
     )
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     app.include_router(router)
+    app.add_exception_handler(StarletteHTTPException, _http_error_page)
+    app.add_exception_handler(Exception, _server_error_page)
     return app
+
+
+# A bare "Internal Server Error" is a dead end in a single-user local tool: the
+# traceback goes to a terminal window nobody is watching. These render something
+# the person in front of the browser can act on. The data shown is the user's
+# own, on their own machine, so nothing leaves anywhere.
+
+
+async def _http_error_page(request, exc):
+    from engine.web.routes import templates
+
+    headings = {404: "Not found", 409: "Not finished yet", 410: "No longer available"}
+    hints = {
+        404: "That job does not exist. It may have been run on a different machine.",
+        409: "This run has not finished. Open it from History to watch its progress.",
+        410: "The stored result for this run was deleted from data/jobs.",
+    }
+    return templates.TemplateResponse(
+        request=request,
+        name="error.html",
+        context={
+            "heading": headings.get(exc.status_code, f"Error {exc.status_code}"),
+            "message": getattr(exc, "detail", None),
+            "hint": hints.get(exc.status_code),
+            "show_traceback_note": False,
+        },
+        status_code=exc.status_code,
+    )
+
+
+async def _server_error_page(request, exc):
+    from engine.web.routes import templates
+
+    hint = None
+    if type(exc).__name__ == "UndefinedError":
+        # Jinja reloads templates from disk; the routes that supply their context
+        # do not. Anyone editing the engine while the server runs hits this.
+        hint = (
+            "This usually means the running server is older than the templates on disk. "
+            "Stop it with Ctrl+C in the terminal window and start run.bat again."
+        )
+    return templates.TemplateResponse(
+        request=request,
+        name="error.html",
+        context={
+            "heading": "Something went wrong",
+            "message": f"{type(exc).__name__}: {exc}"[:600],
+            "hint": hint,
+            "show_traceback_note": True,
+        },
+        status_code=500,
+    )
 
 
 def port_is_free(port: int, host: str = HOST) -> bool:

@@ -131,9 +131,41 @@ def test_history_page_renders_when_empty(client):
     assert "Nothing assessed yet" in response.text
 
 
-def test_unknown_job_is_a_404(client):
-    assert client.get("/jobs/deadbeef").status_code == 404
+def test_unknown_job_is_a_404_with_something_to_click(client):
+    response = client.get("/jobs/deadbeef")
+
+    assert response.status_code == 404
+    assert "Not found" in response.text
+    assert "no such job" in response.text
+    assert "Start a new scan" in response.text
     assert client.get("/jobs/deadbeef/structure").status_code == 404
+
+
+def test_a_crash_renders_an_actionable_page_not_a_bare_500(workspace):
+    """The traceback goes to a terminal nobody is watching; the browser gets this."""
+    from jinja2 import UndefinedError
+
+    from fastapi.testclient import TestClient
+
+    quiet = TestClient(serve.create_app(), raise_server_exceptions=False)
+    _seed_taxonomy()
+    job_id = _upload(quiet, CLOUDFLARE).headers["location"].rsplit("/", 1)[-1]
+
+    def boom(job):
+        raise UndefinedError("'step_titles' is undefined")
+
+    original = routes._result_or_404
+    routes._result_or_404 = boom
+    try:
+        response = quiet.get(f"/jobs/{job_id}/results")
+    finally:
+        routes._result_or_404 = original
+
+    assert response.status_code == 500
+    assert "Something went wrong" in response.text
+    assert "UndefinedError" in response.text
+    # The specific hint for the failure mode of editing code while it runs.
+    assert "start run.bat again" in response.text
 
 
 # ------------------------------------------------------------ job lifecycle
