@@ -22,7 +22,39 @@ wasting a review cycle. Worth clearing first.
 |---|---|---|---|
 | 1.1 | ~~**Staleness banner.**~~ **Done 2026-08-24.** `engine/web/staleness.py` fingerprints the `.py` files under `engine/` when the app is built and rechecks at most every 2 seconds. When they differ, every page carries a banner naming the fix. Registered as a Jinja global rather than passed per route, since a warning that only shows on the pages someone remembered to wire it into is not a warning. `base.html` calls it behind `is defined`, so a server predating the global still renders — the banner must not break the very servers it exists to flag. | eng | done |
 | 1.2 | ~~**Clean up orphaned jobs at startup.**~~ **Done 2026-08-24.** `job_store.fail_orphaned()` runs when the app is built and fails any run still at `queued` or `running`, since the only process that could ever have finished them is the one that died. The reason says to upload the sample again, and the status page stops polling. | eng | done |
-| 1.3 | **Confirm the seeded taxonomy against the real Cloudflare WAF file.** The two shipped entries were written from the Cloudflare `firewall_events` field set, not ported from the team's actual 15-category taxonomy, which was not in this repo. Their detection logic is structurally sound but unverified. | you | S |
+| 1.3 | ~~**Confirm the seeded taxonomy against the real Cloudflare WAF file.**~~ **Done 2026-08-24.** Checked against the team's own material. Findings below. | both | done |
+
+### 1.3 — what the confirmation found
+
+Category names are now known and recorded in the seed file's `source`:
+**PathTraversal, KnownCVE_Signature, SSRF, NoSQLi, OpenRedirect, SensitivePathAccess,
+XSS, SQLi, RCE_CommandInjection**. Those nine are the ones that fired in the single
+client dataset available; `docs/BLUEPRINT.md` refers to fifteen, so six are not
+represented there and are still unknown here.
+
+Three corrections came out of it:
+
+- **`cloudflare-waf-sqli` maps to a real category**, `SQLi`. But the taxonomy treats
+  **`NoSQLi` as a separate category**, and this entry's regex is SQL-keyword based, so
+  it would not catch operator-syntax injection inside JSON. Recorded on the entry as a
+  deliberate boundary rather than left as an accidental gap.
+- **`cloudflare-waf-credential-stuffing` matches nothing in the taxonomy.** All nine
+  observed categories are payload-pattern web attacks; there is no brute-force or
+  credential-stuffing category. It was written as a second structural example to
+  exercise the threshold rule type. Its `source_project` now says *proposed, not yet in
+  the in-house taxonomy*, so nobody reads it as codified team knowledge.
+- **Two deployment constraints were missing and are now assumptions on the entry.** The
+  team's own Cloudflare rules match `http.request.uri`, path and query combined, while
+  this entry keys on `ClientRequestPath` and `ClientRequestQuery` separately as Logpush
+  delivers them — fine for log analysis, but the fields must be joined if the logic
+  becomes a custom rule. And Cloudflare's `matches` operator is Enterprise-plan only,
+  on an RE2 engine with no backreferences or lookaround. This pattern uses neither, so
+  it ports as written; a future one might not.
+
+One thing worth confirming when convenient: the entry's `Action` list includes `log`,
+on the reasoning that a WAF in log-only mode still evidences the attempt. That turns
+out to match the team's documented rollout practice — new custom rules run in Log for
+several days before Block — so it is aligned, not accidental.
 | 1.4 | **Confirm the WAF `RuleID` values.** `cloudflare-waf-sqli` scopes its WAF branch to rule ID `100015`, taken from the synthetic fixture. Real managed-rule IDs are ruleset-specific and must be checked against a client's WAF config. | you | S |
 | 1.5 | ~~**Download a single hypothesis as markdown.**~~ **Done 2026-08-24.** Every hypothesis card has its own **Download this hypothesis** button, alongside the whole-report download. See below for what was built. | eng | done |
 
@@ -81,7 +113,7 @@ engine handled badly.
 
 | # | Task | Owner | Size |
 |---|---|---|---|
-| 3.1 | **Port the remaining 13 Cloudflare WAF categories** into `scripts/seeds/internal_taxonomy.json`. Two of fifteen are seeded as a structural proof. | both | M |
+| 3.1 | **Port the remaining Cloudflare WAF categories** into `scripts/seeds/internal_taxonomy.json`. **Unblocked by 1.3:** eight named categories are still unported, and three of them — PathTraversal, SensitivePathAccess, RCE_CommandInjection — already have reviewed regex, CWE mapping and known weaknesses written up in the team's own pattern document, so they can be ported almost verbatim. The other five (KnownCVE_Signature, SSRF, NoSQLi, OpenRedirect, XSS) have names and observed payloads but no documented logic yet. | both | M |
 | 3.2 | **Add a CyberArk log source signature.** Deliberately skipped: I could not verify the field names, and a guessed signature that looks authoritative is worse than none. Needs one real sample. | both | S |
 | 3.3 | **Grow the internal taxonomy for sources Sigma does not reach.** The FortiGate fixture produced 1 candidate from 3144 Sigma rules; the appliance syslog produced none. That gap is what the taxonomy exists to close, and it only closes one project at a time. | both | L |
 | 3.4 | **Widen the backtest's supported Sigma constructs.** Rules using anything the evaluator does not implement are reported as not backtested, with the reason — never miscounted. Worth extending once real samples show which constructs actually come up. | eng | M |

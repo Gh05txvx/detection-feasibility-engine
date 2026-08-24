@@ -1,5 +1,5 @@
 {
-  "source": "Cloudflare WAF attack-pattern taxonomy (15 categories, curated in-house). Two categories are ported here as the Phase 0 structural proof — see docs/IMPLEMENTATION_PLAN.md Phase 0. Add the remaining categories as entries in this file; scripts/seed_taxonomy.py upserts by slug, so re-running never duplicates.",
+  "source": "Cloudflare WAF attack-pattern taxonomy, curated in-house. Category names confirmed 2026-08-24 against the team's own behaviour-pattern export: PathTraversal, KnownCVE_Signature, SSRF, NoSQLi, OpenRedirect, SensitivePathAccess, XSS, SQLi, RCE_CommandInjection. Those nine are the ones that fired for the one client dataset available; docs/BLUEPRINT.md refers to fifteen, so six are not represented there yet. Add categories as entries in this file; scripts/seed_taxonomy.py upserts by slug, so re-running never duplicates.",
   "schema_notes": {
     "detection_logic": "Sigma-flavoured selection blocks, kept as data rather than a query string so the Phase 3 taxonomy matcher and the Phase 4 backtest can both read it. Modifiers follow Sigma syntax: field|contains, field|re, field|startswith.",
     "required_fields": "Fields that must exist in the sample for this entry to be feasible at all. Drives the Phase 2 'reassess data & patterns' check.",
@@ -9,7 +9,7 @@
     {
       "slug": "cloudflare-waf-sqli",
       "name": "Cloudflare WAF - SQL injection attempt against public web application",
-      "description": "SQL injection payloads in the request path, query string, or body, seen either as a WAF managed-rule block or as raw SQL syntax in the query string when the WAF is in log-only mode. Category 1 of the in-house Cloudflare WAF taxonomy.",
+      "description": "SQL injection payloads in the request path, query string, or body, seen either as a WAF managed-rule block or as raw SQL syntax in the query string when the WAF is in log-only mode. Maps to the in-house category 'SQLi'. NoSQL injection is a separate category ('NoSQLi') in that taxonomy and is deliberately not covered here: its payloads are operator syntax inside JSON, not SQL keywords, and folding them together would make both harder to tune.",
       "logsource_category": "webserver",
       "logsource_product": "cloudflare",
       "logsource_service": "firewall_events",
@@ -45,7 +45,9 @@
       },
       "assumptions": [
         "ClientRequestQuery is URL-decoded during ingestion. Undecoded, '+' stands in for a space and the \\s in this regex stops matching: on the shipped fixture that costs 1 of 5 SQLi events.",
-        "RuleID scopes the waf_managed_block branch to the SQLi managed rules. Without it the branch fires on every WAF block, SQLi or not. The IDs are ruleset-specific, so confirm them against the client's WAF config during onboarding."
+        "RuleID scopes the waf_managed_block branch to the SQLi managed rules. Without it the branch fires on every WAF block, SQLi or not. The IDs are ruleset-specific, so confirm them against the client's WAF config during onboarding.",
+        "This logic is written for log analysis, keying on ClientRequestPath and ClientRequestQuery separately as Logpush firewall_event delivers them. The team's own Cloudflare custom rules match http.request.uri, path and query combined; if this entry is ever turned into a custom rule, the fields have to be joined.",
+        "If deployed as a Cloudflare custom rule rather than an Elastic one: the regex operator 'matches' is Enterprise-plan only, and Cloudflare's engine is RE2, which has no backreferences and no lookaround. This pattern uses neither, so it ports as written."
       ],
       "mitre_techniques": ["T1190"],
       "suggested_rule_type": "custom_query",
@@ -55,14 +57,14 @@
         "Search boxes and CMS admin tooling that legitimately pass SQL-like strings in the query",
         "Security researchers on a bug bounty scope"
       ],
-      "source_project": "internal - Cloudflare WAF taxonomy",
+      "source_project": "internal - Cloudflare WAF taxonomy, category 'SQLi'",
       "author": "IMS team",
-      "notes": "Single-event field match, so custom query is enough; escalate to threshold only if the client wants volume-based alerting instead of per-request. Action 'log' is deliberately in scope: a WAF in log-only mode still evidences the attempt, and arguably matters more because nothing stopped it."
+      "notes": "Single-event field match, so custom query is enough; escalate to threshold only if the client wants volume-based alerting instead of per-request. Action 'log' is deliberately in scope: a WAF in log-only mode still evidences the attempt, and arguably matters more because nothing stopped it. That also matches the team's documented rollout practice, which runs a new custom rule in Log for several days before switching it to Block."
     },
     {
       "slug": "cloudflare-waf-credential-stuffing",
       "name": "Cloudflare WAF - credential stuffing / password spraying against login endpoint",
-      "description": "Repeated failed POSTs to an authentication endpoint from a single client IP or ASN within a short window. Distinguished from a single brute force by breadth: many usernames, few attempts each. Category 7 of the in-house Cloudflare WAF taxonomy.",
+      "description": "Repeated failed POSTs to an authentication endpoint from a single client IP or ASN within a short window. Distinguished from a single brute force by breadth: many usernames, few attempts each. NOT confirmed against the in-house taxonomy: its nine observed categories are all payload-pattern web attacks, and none of them is credential stuffing or brute force. This entry was written as a second structural example, to exercise the threshold rule type alongside the single-event one. Treat its logic as a proposal, not as codified team knowledge.",
       "logsource_category": "webserver",
       "logsource_product": "cloudflare",
       "logsource_service": "firewall_events",
@@ -105,7 +107,7 @@
         "Corporate NAT / proxy egress IPs where many real users share one ClientIP",
         "Load tests and synthetic monitoring hitting the login endpoint"
       ],
-      "source_project": "internal - Cloudflare WAF taxonomy",
+      "source_project": "proposed, not yet in the in-house taxonomy",
       "author": "IMS team",
       "notes": "Threshold needs a per-client baseline: check the sample's normal failed-login rate per IP before committing to count_gte=20. Behind heavy NAT, group by ClientIP + ClientRequestUserAgent instead."
     }
