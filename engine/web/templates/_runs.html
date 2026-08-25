@@ -1,0 +1,89 @@
+{# The run list, on the upload page and on History alike.
+
+   One template rather than two because the delete route re-renders it: a route
+   that has to know which of two near-identical tables called it would drift out
+   of step with them. `view` picks the differences; `jobs` is already scoped to
+   the right limit by whoever rendered this.
+
+   Swapped whole rather than row-by-row so the counts in the heading, the empty
+   state, and the rows can never disagree about what is left. #}
+
+<div id="runs-panel">
+{% if jobs %}
+
+<div class="section-head">
+  {% if view == 'recent' %}
+    <h2>Recent runs</h2>
+    <a class="button ghost small" href="/history">All runs</a>
+  {% else %}
+    <h2>{{ jobs | length }} run{{ '' if jobs | length == 1 else 's' }}
+        <span class="muted small">(<span id="run-count">{{ jobs | length }}</span> shown)</span></h2>
+    <input class="filter" type="search" placeholder="Filter runs&hellip;"
+           data-filter-target="#run-rows" data-filter-count="#run-count">
+  {% endif %}
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Sample</th>
+        <th>Started</th>
+        {% if view != 'recent' %}<th>Finished</th>{% endif %}
+        <th>Status</th>
+        <th>Outcome</th>
+        <th class="row-actions"><span class="sr-only">Delete</span></th>
+      </tr>
+    </thead>
+    <tbody id="run-rows">
+    {% for job in jobs %}
+      <tr data-filter-text="{{ (job.filename ~ ' ' ~ job.status.value ~ ' ' ~ (job.result_type or '')) | lower }}">
+        <td><a href="/jobs/{{ job.job_id }}">{{ job.filename }}</a></td>
+        <td class="muted small">{{ job.created_at }}</td>
+        {% if view != 'recent' %}<td class="muted small">{{ job.finished_at or '' }}</td>{% endif %}
+        <td>{% include "_job_badge.html" %}</td>
+        <td class="small">{% include "_job_outcome.html" %}</td>
+        <td class="row-actions">
+          {% if job.finished %}
+          <button class="icon-button danger"
+                  hx-delete="/jobs/{{ job.job_id }}?view={{ view }}"
+                  hx-target="#runs-panel"
+                  hx-swap="outerHTML"
+                  hx-confirm="Delete {{ job.filename }}? This removes the uploaded sample and the stored result for that run, and cannot be undone."
+                  title="Delete this run and its uploaded sample"
+                  aria-label="Delete {{ job.filename }}">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 6h18"></path>
+              <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"></path>
+              <path d="M19 6l-1 14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1L5 6"></path>
+              <path d="M10 11v6M14 11v6"></path>
+            </svg>
+          </button>
+          {% else %}
+          {# A run still in flight would write its result file after the delete,
+             leaving an orphan the row no longer points at. #}
+          <button class="icon-button" disabled
+                  title="Still running. It can be deleted once it finishes."
+                  aria-label="Cannot delete a run that is still going">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="1.9" stroke-linecap="round" aria-hidden="true">
+              <path d="M12 6v6l4 2"></path>
+              <circle cx="12" cy="12" r="9"></circle>
+            </svg>
+          </button>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% elif view != 'recent' %}
+<div class="empty">
+  <p>Nothing assessed yet.</p>
+  <p><a class="button" href="/">Start with a sample</a></p>
+</div>
+{% endif %}
+</div>

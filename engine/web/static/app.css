@@ -366,6 +366,43 @@ button:disabled { opacity: 0.5; cursor: default; transform: none; box-shadow: no
 .button.ghost:hover { background: var(--panel-2); border-color: var(--accent); color: var(--accent); filter: none; }
 .button.small { padding: 0.32rem 0.7rem; font-size: 0.85rem; }
 
+/* A square, quiet button for a row action. It stays low-contrast until the row
+   is hovered, so a column of delete icons does not read as the loudest thing on
+   a page whose subject is the runs themselves. */
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 1.85rem;
+  height: 1.85rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+  transition: background 0.13s, color 0.13s, border-color 0.13s;
+}
+
+.icon-button:hover { background: var(--panel-2); color: var(--ink-2); border-color: var(--line); filter: none; transform: none; box-shadow: none; }
+.icon-button.danger:hover { background: var(--bad-soft); color: var(--bad); border-color: var(--bad); }
+.icon-button:disabled { opacity: 0.4; }
+.icon-button:disabled:hover { background: transparent; border-color: transparent; color: var(--muted); }
+
+td.row-actions, th.row-actions { width: 2.6rem; text-align: right; padding-left: 0.2rem; }
+
+/* Visible to a screen reader, and to nobody else. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* ---------------------------------------------------------------- badges -- */
 
 .badge {

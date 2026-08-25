@@ -46,27 +46,30 @@
 
   // Type-to-filter over any container of rows or cards. A Windows Security
   // sample produces 146 candidates; scrolling is not a way to find one.
+  //
+  // Delegated from the document rather than bound to each input, because htmx
+  // replaces whole panels: an input bound on DOMContentLoaded stops filtering
+  // the moment its panel is swapped, and rebinding after each swap doubles up
+  // the handlers on the inputs that were not replaced.
   function setupFilters() {
-    var inputs = document.querySelectorAll("[data-filter-target]");
-    Array.prototype.forEach.call(inputs, function (input) {
+    document.addEventListener("input", function (event) {
+      var input = event.target;
+      if (!input || !input.getAttribute || !input.getAttribute("data-filter-target")) return;
+
       var container = document.querySelector(input.getAttribute("data-filter-target"));
-      var counter = input.getAttribute("data-filter-count")
-        ? document.querySelector(input.getAttribute("data-filter-count"))
-        : null;
       if (!container) return;
+      var countSelector = input.getAttribute("data-filter-count");
+      var counter = countSelector ? document.querySelector(countSelector) : null;
 
+      var needle = input.value.trim().toLowerCase();
       var items = container.querySelectorAll("[data-filter-text]");
-
-      input.addEventListener("input", function () {
-        var needle = input.value.trim().toLowerCase();
-        var shown = 0;
-        Array.prototype.forEach.call(items, function (item) {
-          var hit = !needle || item.getAttribute("data-filter-text").indexOf(needle) !== -1;
-          item.classList.toggle("is-hidden", !hit);
-          if (hit) shown += 1;
-        });
-        if (counter) counter.textContent = shown;
+      var shown = 0;
+      Array.prototype.forEach.call(items, function (item) {
+        var hit = !needle || item.getAttribute("data-filter-text").indexOf(needle) !== -1;
+        item.classList.toggle("is-hidden", !hit);
+        if (hit) shown += 1;
       });
+      if (counter) counter.textContent = shown;
     });
   }
 

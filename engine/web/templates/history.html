@@ -5,38 +5,13 @@
 <h1>Run history</h1>
 
 {% if jobs %}
-<p class="lede">Every sample assessed on this machine. Results survive a server restart.</p>
-
-<div class="section-head">
-  <h2>{{ jobs | length }} run{{ '' if jobs | length == 1 else 's' }}
-      <span class="muted small">(<span id="run-count">{{ jobs | length }}</span> shown)</span></h2>
-  <input class="filter" type="search" placeholder="Filter runs&hellip;"
-         data-filter-target="#run-rows" data-filter-count="#run-count">
-</div>
-
-<div class="table-wrap">
-  <table>
-    <thead>
-      <tr><th>Sample</th><th>Started</th><th>Finished</th><th>Status</th><th>Outcome</th></tr>
-    </thead>
-    <tbody id="run-rows">
-    {% for job in jobs %}
-      <tr data-filter-text="{{ (job.filename ~ ' ' ~ job.status.value ~ ' ' ~ (job.result_type or '')) | lower }}">
-        <td><a href="/jobs/{{ job.job_id }}">{{ job.filename }}</a></td>
-        <td class="muted small">{{ job.created_at }}</td>
-        <td class="muted small">{{ job.finished_at or '' }}</td>
-        <td>{% include "_job_badge.html" %}</td>
-        <td class="small">{% include "_job_outcome.html" %}</td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-</div>
-{% else %}
-<div class="empty">
-  <p>Nothing assessed yet.</p>
-  <p><a class="button" href="/">Start with a sample</a></p>
-</div>
+<p class="lede">
+  Every sample assessed on this machine. Results survive a server restart; deleting a
+  run also deletes the sample that was uploaded for it.
+</p>
 {% endif %}
+
+{% set view = 'history' %}
+{% include "_runs.html" %}
 
 {% endblock %}

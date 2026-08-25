@@ -361,6 +361,101 @@ def test_no_match_sample_shows_the_rejection_report(client):
     assert "# Detection feasibility: rejection report" in download.text
 
 
+# ----------------------------------------------------------- deleting a run
+
+
+def test_deleting_a_run_removes_its_uploaded_sample_and_result(client, workspace):
+    """The sample is the point: it is the one artefact holding real client logs."""
+    _seed_taxonomy()
+    job_id = _upload(client, CLOUDFLARE).headers["location"].rsplit("/", 1)[-1]
+
+    uploads = list((workspace / "uploads").glob(f"{job_id}-*"))
+    result_file = workspace / "jobs" / f"{job_id}.json"
+    assert uploads and result_file.is_file()
+
+    response = client.delete(f"/jobs/{job_id}?view=history")
+
+    assert response.status_code == 200
+    assert not list((workspace / "uploads").glob(f"{job_id}-*"))
+    assert not result_file.exists()
+    with db.connection() as conn:
+        assert job_store.get(conn, job_id) is None
+    # The panel comes back re-rendered, so the count cannot drift from the rows.
+    assert 'id="runs-panel"' in response.text
+    assert job_id not in response.text
+    assert "Nothing assessed yet" in response.text
+
+
+def test_the_panel_that_comes_back_matches_the_page_it_was_deleted_from(client):
+    _seed_taxonomy()
+    keep = _upload(client, APPLIANCE).headers["location"].rsplit("/", 1)[-1]
+    drop = _upload(client, CLOUDFLARE).headers["location"].rsplit("/", 1)[-1]
+
+    recent = client.delete(f"/jobs/{drop}?view=recent")
+
+    assert "Recent runs" in recent.text
+    assert "All runs" in recent.text
+    assert keep in recent.text
+    # The upload page's compact table has no Finished column and no filter.
+    assert "Finished" not in recent.text
+    assert "Filter runs" not in recent.text
+
+
+def test_a_run_still_going_cannot_be_deleted(client, workspace):
+    """It would write its result file after the delete, orphaning it."""
+    with db.connection() as conn:
+        job = job_store.create(conn, "in-flight.csv")
+        job_store.mark_running(conn, job.job_id)
+
+    response = client.delete(f"/jobs/{job.job_id}")
+
+    assert response.status_code == 409
+    with db.connection() as conn:
+        assert job_store.get(conn, job.job_id) is not None
+
+
+def test_delete_will_not_follow_a_result_path_out_of_its_directory(client, workspace):
+    """The path comes out of the database; it is not trusted for being usual."""
+    outsider = workspace / "not-a-job-result.json"
+    outsider.write_text("{}", encoding="utf-8")
+
+    with db.connection() as conn:
+        job = job_store.create(conn, "tampered.csv")
+        job_store.mark_done(
+            conn, job.job_id,
+            result_type=job_store.ResultType.RUNBOOK,
+            result_path=str(outsider),
+        )
+
+    response = client.delete(f"/jobs/{job.job_id}")
+
+    assert response.status_code == 200
+    assert outsider.is_file(), "a file outside the job directory must survive"
+    with db.connection() as conn:
+        assert job_store.get(conn, job.job_id) is None
+
+
+def test_deleting_an_unknown_run_is_a_404(client):
+    assert client.delete("/jobs/deadbeef0000").status_code == 404
+
+
+def test_a_finished_run_offers_delete_and_an_unfinished_one_does_not(client):
+    with db.connection() as conn:
+        running = job_store.create(conn, "still-going.csv")
+        job_store.mark_running(conn, running.job_id)
+        finished = job_store.create(conn, "finished.csv")
+        job_store.mark_failed(conn, finished.job_id, "nope")
+
+    page = client.get("/history").text
+
+    assert f'hx-delete="/jobs/{finished.job_id}?view=history"' in page
+    assert f"/jobs/{running.job_id}?view=" not in page
+    assert "Still running. It can be deleted once it finishes." in page
+    # Deleting is destructive and irreversible, so it asks first.
+    assert "hx-confirm=" in page
+    assert "cannot be undone" in page
+
+
 def test_one_hypothesis_downloads_on_its_own(client):
     """What you hand a client is one onboarding ask, not a report to search."""
     job_id = _upload(client, APPLIANCE).headers["location"].rsplit("/", 1)[-1]

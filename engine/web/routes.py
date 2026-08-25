@@ -35,6 +35,14 @@ JOB_DIR = REPO_ROOT / "data" / "jobs"
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 _CHUNK = 1024 * 1024
 
+RECENT_LIMIT = 5
+HISTORY_LIMIT = 100
+
+# Job ids are `uuid4().hex[:12]`. Checked again before any path is built from one,
+# because a delete that takes an id from the URL and hands it to a glob is exactly
+# where a traversal would pay off.
+_JOB_ID_RE = re.compile(r"^[0-9a-f]{6,32}$")
+
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 # Registered as a Jinja global rather than passed in each route's context: a
 # warning that only appears on the pages someone remembered to wire it into is
@@ -53,7 +61,7 @@ router = APIRouter()
 @router.get("/", response_class=HTMLResponse)
 async def upload_page(request: Request) -> Response:
     with db.connection() as conn:
-        recent = job_store.list_recent(conn, limit=5)
+        recent = job_store.list_recent(conn, limit=RECENT_LIMIT)
         taxonomy_size = taxonomy_store.count(conn)
     return templates.TemplateResponse(
         request=request,
@@ -195,8 +203,37 @@ async def hypothesis(job_id: str, index: int) -> Response:
 @router.get("/history", response_class=HTMLResponse)
 async def history_page(request: Request) -> Response:
     with db.connection() as conn:
-        jobs = job_store.list_recent(conn, limit=100)
+        jobs = job_store.list_recent(conn, limit=HISTORY_LIMIT)
     return templates.TemplateResponse(request=request, name="history.html", context={"jobs": jobs})
+
+
+@router.delete("/jobs/{job_id}", response_class=HTMLResponse)
+async def delete_job(request: Request, job_id: str, view: str = "history") -> Response:
+    """Delete one run: its row, its stored result, and the sample uploaded for it.
+
+    The uploaded sample is the point. It is the one artefact here that holds real
+    client log data, and until now nothing removed it - a run could be forgotten
+    from the UI while its sample sat on disk indefinitely.
+
+    Returns the whole re-rendered panel rather than an empty row, so the heading
+    count, the empty state and the rows cannot end up disagreeing.
+    """
+    job = _job_or_404(job_id)
+    if not job.finished:
+        raise HTTPException(
+            status_code=409,
+            detail="this run is still going; it would write its result after the delete",
+        )
+
+    _remove_job_files(job)
+    limit = RECENT_LIMIT if view == "recent" else HISTORY_LIMIT
+    with db.connection() as conn:
+        job_store.delete(conn, job.job_id)
+        jobs = job_store.list_recent(conn, limit=limit)
+
+    return templates.TemplateResponse(
+        request=request, name="_runs.html", context={"jobs": jobs, "view": view}
+    )
 
 
 # ----------------------------------------------------------------- job runner
@@ -251,6 +288,42 @@ def _result_or_404(job: JobRecord) -> PipelineResult:
     if not path.is_file():
         raise HTTPException(status_code=410, detail="the stored result for this run is gone")
     return PipelineResult.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def _remove_job_files(job: JobRecord) -> None:
+    """Delete what one run left on disk: its uploaded sample and its result.
+
+    Both paths are checked against the directory they are supposed to be under
+    before anything is unlinked. `result_path` comes out of the database and the
+    id comes off the URL; neither is trusted to be inside its directory just
+    because it normally is.
+
+    A file already gone is not an error - the row is what the user asked to be
+    rid of, and refusing to finish because a file was cleaned up by hand would
+    leave them stuck.
+    """
+    if not _JOB_ID_RE.match(job.job_id):
+        return
+
+    for path in UPLOAD_DIR.glob(f"{job.job_id}-*"):
+        _unlink_within(path, UPLOAD_DIR)
+
+    if job.result_path:
+        _unlink_within(Path(job.result_path), JOB_DIR)
+
+
+def _unlink_within(path: Path, directory: Path) -> None:
+    """Unlink `path` only if it really resolves to a file inside `directory`."""
+    try:
+        resolved = path.resolve()
+        if not resolved.is_relative_to(directory.resolve()):
+            return
+        if resolved.is_file():
+            resolved.unlink()
+    except OSError:
+        # Locked by a virus scanner, or on a volume that vanished. The row still
+        # goes; a file that could not be removed is not a reason to keep it.
+        pass
 
 
 def _markdown(body: str, filename: str) -> Response:

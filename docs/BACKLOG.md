@@ -134,6 +134,39 @@ Built:
 
 | 1.8 | ~~**Visual pass, and four table bugs.**~~ **Done 2026-08-25.** The stylesheet was rebuilt around a deeper palette, real elevation and a working sticky header. Four table bugs found and fixed — details below. | eng | done |
 
+| 1.9 | ~~**Delete a run from the run list.**~~ **Done 2026-08-25.** Every finished row on the upload page and on History carries a delete button. It removes the row, the stored result, *and the uploaded sample*. Partly closes 5.1. | eng | done |
+
+### 1.9 — deleting a run deletes the sample, which is the point
+
+A delete button on a history table is ordinary. The reason this one matters is
+`data/uploads/`: it is the only place in the project that holds **real client log
+data**, and until now nothing ever removed anything from it. A run could be
+forgotten from the UI while the sample it came from sat on disk indefinitely.
+Deleting a run now removes all three artefacts — the row, `data/jobs/<id>.json`,
+and `data/uploads/<id>-<name>`.
+
+Four decisions worth recording:
+
+- **A run still in flight cannot be deleted.** It would write its result file
+  *after* the delete, leaving an orphan no row points at. The button is disabled
+  with a reason rather than hidden, so the absence is explained.
+- **Neither path is trusted for being usual.** `result_path` comes out of the
+  database and the job id comes off the URL; both are resolved and checked
+  against the directory they are supposed to be under before anything is
+  unlinked. A delete route that hands a URL segment to a glob is exactly where a
+  traversal would pay off. A file that has wandered outside its directory is left
+  alone and the row still goes.
+- **The whole panel is swapped, not the row.** Removing just the row would leave
+  the heading count, the "N shown" filter count and the empty state disagreeing
+  with what is actually there. One template renders that panel for both pages,
+  because a route that had to know which of two near-identical tables called it
+  would drift out of step with them.
+- **The filter is now delegated from the document.** An input bound at
+  `DOMContentLoaded` stops working the moment htmx swaps its panel, and rebinding
+  after each swap doubles the handlers on inputs that were not replaced.
+
+It asks before it acts, and says what it is about to remove.
+
 ### 1.8 — four table bugs, all from one line of CSS
 
 `.table-wrap { overflow: hidden }` was there to clip the rounded corners. It cost
@@ -331,7 +364,7 @@ Not oversights. `docs/BLUEPRINT.md` explicitly places these after the core is pr
 
 | # | Task | Owner | Size |
 |---|---|---|---|
-| 5.1 | **Upload retention.** `data/uploads/` keeps every uploaded sample forever. These are client logs; they should expire, or at least be prunable from the UI. | eng | S |
+| 5.1 | **Upload retention.** ~~`data/uploads/` keeps every uploaded sample forever.~~ **Half done 2026-08-25 (see 1.9): samples are now prunable from the UI** — deleting a run deletes its uploaded sample. What is still open is *expiry*: nothing removes a sample the user never gets round to deleting. | eng | S |
 | 5.2 | **Corpus refresh cadence.** The blueprint asks for periodic refreshes of the Sigma and integrations clones. `scripts\setup.ps1` refreshes them, but nothing prompts anyone to run it. A staleness note on the results page would be enough. | eng | S |
 | 5.3 | **Clear the verification runs** left in the local job history from UI testing. Cosmetic; they are visible in History. | eng | S |
 
