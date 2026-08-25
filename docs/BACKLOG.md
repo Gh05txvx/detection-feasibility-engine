@@ -136,6 +136,54 @@ Built:
 
 | 1.9 | ~~**Delete a run from the run list.**~~ **Done 2026-08-25.** Every finished row on the upload page and on History carries a delete button. It removes the row, the stored result, *and the uploaded sample*. Partly closes 5.1. | eng | done |
 
+| 1.10 | ~~**The draft query for taxonomy entries was wrong, not just ugly.**~~ **Done 2026-08-25.** Hand-rolled KQL replaced with the pySigma backends already used for Sigma rules. Three of six seeded entries were shipping a query that matched every event. | eng | done |
+
+### 1.10 — the hand-rolled KQL was emitting `true`
+
+Asked whether sigma-cli's default output was the ugly one. It was not; ours was,
+and "ugly" understates it. Taxonomy entries never went near pySigma — they were
+rendered to KQL by a hand-written generator, which re-implemented pySigma and got
+it wrong in three ways:
+
+| Entry | What shipped | What pySigma produces |
+|---|---|---|
+| `path-traversal` | `true /* see note */ or true /* see note */` | `url.path:/(?i)(\.\.\/…)/ OR url.query:/…/` |
+| `sensitive-path-access` | `true /* see note */` | `url.path:/(?i)(\.env$|\.git\/…)/` |
+| `sqli` | `(…) or true /* see note */` | `(…) OR url.query:/(?i)(union[\s\/*]+select…)/` |
+| `low-attack-score` | `waf_attack_score:"20"` | `waf_attack_score:<=20` |
+
+The first three are the same failure: a `|re` value has no KQL equivalent, so the
+generator emitted a note and substituted `true` for the block. **`x or true` is
+`true`.** Three of the six seeded entries produced a query matching every event
+in the index, printed in a runbook headed "draft query" for an analyst to review.
+
+The fourth is worse for being quiet. `|lte` was not in the modifier list, so the
+modifier was dropped and the value rendered as an equality: `score <= 20` shipped
+as `score = 20`. Nothing looks broken. It just means something else — and it is
+the entry ported from the team's own attack-score runbook.
+
+A fifth, found while fixing: taxonomy entries were always labelled `kql`
+regardless of the classified rule type, so an entry classified `eql` was still
+rendered as KQL.
+
+**The fix is deletion.** `detection_logic` is *already* Sigma detection syntax —
+BLUEPRINT 5.3b specifies it that way — so an entry only needs a Sigma envelope
+around it and pySigma does the rest. `_taxonomy_query`, `_substitute_blocks`,
+`_kql_clause` and `_KQL_SPECIAL` are gone, about 80 lines, and with them the
+escaping bugs the earlier audit had to fix in them. Output is now Lucene (or EQL
+or ES|QL, per rule type), which Elastic's rule editor accepts and which supports
+regex where KQL does not.
+
+Two things the change surfaced:
+
+- **Sigma refuses an empty logsource**, and an entry is allowed to have none. A
+  placeholder is filled in; with a field-mapping-only pipeline the logsource
+  never reaches the query, so it cannot change what is generated.
+- **A conversion failure was also swallowing the threshold configuration.** The
+  `group by` / `count` / `window` block was nested under the success branch, so
+  an entry that failed to convert lost its aggregation too. It is configuration,
+  not query text; it now renders either way.
+
 ### 1.9 — deleting a run deletes the sample, which is the point
 
 A delete button on a history table is ordinary. The reason this one matters is

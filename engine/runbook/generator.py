@@ -5,11 +5,15 @@ rule, not a rule that gets deployed. Every runbook ends at the human review
 checkpoint (5.8); nothing here writes to Kibana, and nothing here should be
 read as a decision already made.
 
-The draft query is produced by converting the matched Sigma rule with pySigma,
-through a processing pipeline built from this sample's own field mapping. That
-is the piece Phase 0 identified as missing: the shipped ECS pipelines cover
-Windows and Zeek, not the webserver taxonomy, so a converted rule would
-otherwise reference `cs-method`, a field name that exists in no Elastic index.
+The draft query is produced by converting the matched rule with pySigma, through
+a processing pipeline built from this sample's own field mapping. That is the
+piece Phase 0 identified as missing: the shipped ECS pipelines cover Windows and
+Zeek, not the webserver taxonomy, so a converted rule would otherwise reference
+`cs-method`, a field name that exists in no Elastic index.
+
+Internal taxonomy entries take the same route. Their detection logic is written
+in Sigma's own syntax, so they are wrapped in a Sigma envelope and handed to the
+same backend rather than converted by hand.
 
 Which field names the query targets depends on what the implementation will do:
 
@@ -24,6 +28,7 @@ Either way the runbook states which, and prints the mapping it used.
 from __future__ import annotations
 
 import re
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
@@ -136,10 +141,24 @@ def _draft_query(
     sigma_rule: Any | None,
     taxonomy_entry: TaxonomyEntry | None,
 ) -> tuple[str, str, str | None]:
-    """Return (language, query, error). Errors are reported, never hidden."""
+    """Return (language, query, error). Errors are reported, never hidden.
+
+    Taxonomy entries go through the same pySigma backends as Sigma rules. They
+    used to be rendered as KQL by hand, which re-implemented pySigma badly: a
+    `|re` value became `true`, so a rule scoped to path traversal shipped as a
+    query matching every event, and `|lte` was ignored, so `score <= 20` shipped
+    as `score = 20`. See docs/BACKLOG.md 1.10.
+    """
+    rule = sigma_rule
     if taxonomy_entry is not None:
-        return "kql", _taxonomy_query(taxonomy_entry, mapping), None
-    if sigma_rule is None:
+        try:
+            rule = _entry_as_sigma_rule(taxonomy_entry)
+        except Exception as exc:  # noqa: BLE001 - a bad entry is a finding, not a crash
+            return "", "", (
+                "the entry's detection logic could not be read as Sigma: "
+                f"{type(exc).__name__}: {exc}"
+            )
+    if rule is None:
         return "", "", "no Sigma rule was available to convert"
 
     try:
@@ -164,7 +183,7 @@ def _draft_query(
         return "", "", f"no converter is wired up for {elastic_type.value}"
 
     try:
-        queries = backend_class(processing_pipeline=pipeline).convert_rule(sigma_rule)
+        queries = backend_class(processing_pipeline=pipeline).convert_rule(rule)
     except Exception as exc:  # noqa: BLE001 - conversion failure is a finding, not a crash
         return backend_name, "", f"{type(exc).__name__}: {exc}"
 
@@ -185,82 +204,56 @@ def _backend_for(elastic_type: ElasticRuleType) -> tuple[str, Any]:
     return "lucene", LuceneBackend
 
 
-def _taxonomy_query(entry: TaxonomyEntry, mapping: dict[str, str]) -> str:
-    """Render a taxonomy entry's detection logic as draft KQL."""
-    blocks: dict[str, str] = {}
-    notes: list[str] = []
-
-    for name, spec in entry.detection_logic.items():
-        if name in {"condition", "aggregation"} or not isinstance(spec, dict):
-            continue
-        clauses: list[str] = []
-        for raw_field, expected in spec.items():
-            field_name, _, modifier_text = str(raw_field).partition("|")
-            modifiers = [modifier for modifier in modifier_text.split("|") if modifier]
-            target = mapping.get(field_name, field_name)
-            values = expected if isinstance(expected, list) else [expected]
-
-            if "re" in modifiers:
-                notes.append(
-                    f"// {target}: regular expression, which KQL cannot express. Use an ES|QL "
-                    f"`rlike`, a runtime field, or a query_string regexp: {values[0]}"
-                )
-                continue
-            clauses.append(_kql_clause(target, values, modifiers))
-
-        if clauses:
-            blocks[name] = " and ".join(clauses)
-
-    condition = str(entry.detection_logic.get("condition") or " and ".join(blocks))
-    condition = condition.split("|")[0].strip()
-
-    replacements = {name: f"({clause})" for name, clause in blocks.items()}
-    for name in entry.detection_logic:
-        if name not in blocks and name not in {"condition", "aggregation"}:
-            replacements[name] = "true /* see note above */"
-
-    query = _substitute_blocks(condition, replacements)
-    return "\n".join([*notes, query]) if notes else query
+# Stable ids for taxonomy-derived rules, so the same entry converts to the same
+# rule id on every machine and every run.
+_TAXONOMY_NAMESPACE = uuid.UUID("6f1d4d1c-6d3a-5f7e-9c2b-8a5e0b3d4c11")
 
 
-def _substitute_blocks(condition: str, replacements: dict[str, str]) -> str:
-    """Replace every block name in one pass.
+def _entry_as_sigma_rule(entry: TaxonomyEntry) -> Any:
+    """Express one taxonomy entry as a Sigma rule.
 
-    Substituting block by block re-scans text already inserted, so a block whose
-    name also appears inside another block's rendered values gets replaced a
-    second time, inside the value. One pass cannot do that.
+    Cheap, because the entry is already Sigma-shaped by design: BLUEPRINT 5.3b
+    specifies `detection_logic` in Sigma's own detection syntax, `field|modifier`
+    keys and a named condition included. Only the envelope has to be built, and
+    then pySigma does the conversion it is written to do.
     """
-    if not replacements:
-        return condition
-    names = sorted(replacements, key=len, reverse=True)
-    pattern = re.compile(r"\b(" + "|".join(re.escape(name) for name in names) + r")\b")
-    return pattern.sub(lambda match: replacements[match.group(0)], condition)
+    from sigma.rule import SigmaRule
 
+    detection = {
+        name: spec for name, spec in entry.detection_logic.items() if name != "aggregation"
+    }
+    condition = detection.get("condition")
+    if not condition:
+        # No condition stated means every block has to hold.
+        condition = " and ".join(name for name in detection if name != "condition")
+    # Aggregation is held in its own key here and rendered as rule configuration.
+    # Sigma writes it after a pipe, which none of these backends accept.
+    detection["condition"] = str(condition).split("|")[0].strip()
 
-# Characters KQL treats as syntax; they have to be escaped in an unquoted value.
-_KQL_SPECIAL = re.compile(r'([\\():<>"*{}\s])')
+    logsource = {
+        key: value
+        for key, value in (
+            ("category", entry.logsource_category),
+            ("product", entry.logsource_product),
+            ("service", entry.logsource_service),
+        )
+        if value
+    }
+    # Sigma refuses an empty logsource, and an entry is allowed to have none.
+    # Safe to fill in: with a field-mapping-only pipeline the logsource never
+    # reaches the query, so this placeholder cannot change what is generated.
+    if not logsource:
+        logsource = {"category": "unspecified"}
 
-
-def _kql_clause(field: str, values: Sequence[Any], modifiers: Sequence[str]) -> str:
-    """Render one field's values as KQL.
-
-    Quoting and wildcards are mutually exclusive in KQL: inside a quoted phrase
-    a `*` is a literal asterisk, so a substring match has to be written
-    unquoted with its special characters escaped. An exact match is the other
-    way round -- quote it, and escape the quotes inside.
-    """
-    prefix = "*" if "contains" in modifiers or "endswith" in modifiers else ""
-    suffix = "*" if "contains" in modifiers or "startswith" in modifiers else ""
-    wildcarded = bool(prefix or suffix)
-
-    rendered = [
-        f"{prefix}{_KQL_SPECIAL.sub(r'\\\1', str(value))}{suffix}" if wildcarded
-        else '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
-        for value in values
-    ]
-
-    joined = " or ".join(rendered)
-    return f"{field}:({joined})" if len(rendered) > 1 else f"{field}:{joined}"
+    return SigmaRule.from_dict(
+        {
+            "title": entry.name,
+            "id": str(uuid.uuid5(_TAXONOMY_NAMESPACE, entry.slug)),
+            "status": "experimental",
+            "logsource": logsource,
+            "detection": detection,
+        }
+    )
 
 
 # ----------------------------------------------------------------- rendering
@@ -382,14 +375,19 @@ def _render(
         ])
     else:
         lines.extend([f"```{language}", query, "```", ""])
-        if decision.elastic_type in _QUERY_PLUS_CONFIG:
-            lines.extend([
-                f"A **{decision.elastic_type.value}** rule takes this as its base query plus "
-                "configuration:",
-                "",
-            ])
-            lines.extend(_rule_configuration(decision.elastic_type, taxonomy_entry))
-            lines.append("")
+
+    # Outside the branch above on purpose: the aggregation is configuration, not
+    # query text, so a conversion failure is no reason to withhold it. It used to
+    # be nested under the success case and vanished along with the query.
+    if decision.elastic_type in _QUERY_PLUS_CONFIG:
+        lines.extend([
+            f"A **{decision.elastic_type.value}** rule takes "
+            + ("this as its base query plus" if not query_error else "the hand-written query plus")
+            + " configuration:",
+            "",
+        ])
+        lines.extend(_rule_configuration(decision.elastic_type, taxonomy_entry))
+        lines.append("")
 
     lines.extend([
         "## Expected trigger",

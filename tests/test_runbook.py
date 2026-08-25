@@ -108,7 +108,19 @@ def test_sigma_rule_converts_with_the_sample_field_mapping():
     assert "cs-method:" not in runbook.markdown.split("## Draft query")[1].split("```")[1]
 
 
-def test_taxonomy_entry_renders_a_kql_draft():
+def _taxonomy_query(entry: TaxonomyEntry, *, rule_type=ElasticRuleType.CUSTOM_QUERY, **kwargs) -> str:
+    candidate = _candidate(
+        source=MatchSource.INTERNAL_TAXONOMY, rule_ref="internal:test", matched_fields={}
+    )
+    markdown = generate(
+        candidate, _fingerprint(**kwargs), _decision(rule_type), _forecast(), taxonomy_entry=entry
+    ).markdown
+    return markdown.split("## Draft query")[1].split("```")[1].split("\n", 1)[1].strip()
+
+
+def test_a_taxonomy_entry_converts_through_the_same_backend_as_a_sigma_rule():
+    """Its detection logic is already Sigma; converting it by hand only re-did
+    pySigma, and re-did it wrong. See test_regex_logic_converts_to_a_real_query."""
     entry = TaxonomyEntry(
         slug="test", name="Test entry", confidence=0.8,
         detection_logic={
@@ -116,73 +128,102 @@ def test_taxonomy_entry_renders_a_kql_draft():
             "condition": "waf",
         },
     )
-    candidate = _candidate(source=MatchSource.INTERNAL_TAXONOMY, rule_ref="internal:test", matched_fields={})
 
-    runbook = generate(candidate, _fingerprint(), _decision(), _forecast(), taxonomy_entry=entry)
-
-    assert "```kql" in runbook.markdown
-    assert 'Source:"waf"' in runbook.markdown
-    assert 'Action:("block" or "log")' in runbook.markdown
-
-
-def test_block_name_appearing_in_a_value_does_not_corrupt_the_query():
-    """Substituting block by block re-scans text already inserted."""
-    entry = TaxonomyEntry(
-        slug="test", name="Test entry", confidence=0.8,
-        detection_logic={
-            "waf": {"Action": ["block"]},
-            "block": {"Source": ["firewall"]},
-            "condition": "waf or block",
-        },
+    runbook = generate(
+        _candidate(source=MatchSource.INTERNAL_TAXONOMY, rule_ref="internal:test", matched_fields={}),
+        _fingerprint(), _decision(), _forecast(), taxonomy_entry=entry,
     )
-    candidate = _candidate(source=MatchSource.INTERNAL_TAXONOMY, rule_ref="internal:test", matched_fields={})
 
-    markdown = generate(candidate, _fingerprint(), _decision(), _forecast(), taxonomy_entry=entry).markdown
-    query = markdown.split("```kql")[1].split("```")[0].strip()
-
-    assert query.count("Source:") == 1
-    assert 'Action:"block"' in query
-    assert "Action:(Source:" not in query
+    assert "```lucene" in runbook.markdown
+    assert "Source:waf" in runbook.markdown
+    assert "Action:(block OR log)" in runbook.markdown
 
 
-def test_quotes_inside_a_value_are_escaped():
-    entry = TaxonomyEntry(
-        slug="test", name="Test entry", confidence=0.8,
-        detection_logic={"sel": {"Msg": ['he said "hi"']}, "condition": "sel"},
-    )
-    candidate = _candidate(source=MatchSource.INTERNAL_TAXONOMY, rule_ref="internal:test", matched_fields={})
-
-    markdown = generate(candidate, _fingerprint(), _decision(), _forecast(), taxonomy_entry=entry).markdown
-    query = markdown.split("```kql")[1].split("```")[0].strip()
-
-    assert query == r'(Msg:"he said \"hi\"")'
-
-
-def test_contains_renders_as_an_unquoted_wildcard():
-    """In KQL a `*` inside quotes is a literal asterisk, not a wildcard."""
-    entry = TaxonomyEntry(
-        slug="test", name="Test entry", confidence=0.8,
-        detection_logic={"sel": {"Query|contains": ["union select"]}, "condition": "sel"},
-    )
-    candidate = _candidate(source=MatchSource.INTERNAL_TAXONOMY, rule_ref="internal:test", matched_fields={})
-
-    markdown = generate(candidate, _fingerprint(), _decision(), _forecast(), taxonomy_entry=entry).markdown
-    query = markdown.split("```kql")[1].split("```")[0].strip()
-
-    assert query == r"(Query:*union\ select*)"
-
-
-def test_regex_logic_is_flagged_as_inexpressible_in_kql():
+def test_regex_logic_converts_to_a_real_query():
+    """The old hand-rolled KQL emitted `true` here, which matched every event."""
     entry = TaxonomyEntry(
         slug="test", name="Test entry", confidence=0.8,
         detection_logic={"payload": {"Query|re": r"union\s+select"}, "condition": "payload"},
     )
+
+    query = _taxonomy_query(entry)
+
+    assert query == r"Query:/union\s+select/"
+    assert "true" not in query
+
+
+def test_a_comparison_modifier_is_not_flattened_into_equality():
+    """`lte` used to be dropped, turning `score <= 20` into `score = 20`."""
+    entry = TaxonomyEntry(
+        slug="test", name="Test entry", confidence=0.8,
+        detection_logic={"low": {"Score|lte": 20}, "condition": "low"},
+    )
+
+    assert _taxonomy_query(entry) == "Score:<=20"
+
+
+def test_a_negated_condition_survives_conversion():
+    entry = TaxonomyEntry(
+        slug="test", name="Test entry", confidence=0.8,
+        detection_logic={
+            "low": {"Score|lte": 20},
+            "stopped": {"Action": ["block", "challenge"]},
+            "condition": "low and not stopped",
+        },
+    )
+
+    query = _taxonomy_query(entry)
+
+    assert "Score:<=20" in query
+    assert "NOT" in query and "Action:(block OR challenge)" in query
+
+
+def test_contains_becomes_a_wildcard_the_backend_escaped_itself():
+    entry = TaxonomyEntry(
+        slug="test", name="Test entry", confidence=0.8,
+        detection_logic={"sel": {"Query|contains": ["union select"]}, "condition": "sel"},
+    )
+
+    assert _taxonomy_query(entry) == r"Query:*union\ select*"
+
+
+def test_the_rule_type_picks_the_query_language():
+    """A taxonomy entry classified EQL used to be rendered as KQL regardless."""
+    entry = TaxonomyEntry(
+        slug="test", name="Test entry", confidence=0.8,
+        detection_logic={"sel": {"Action": ["block"]}, "condition": "sel"},
+    )
     candidate = _candidate(source=MatchSource.INTERNAL_TAXONOMY, rule_ref="internal:test", matched_fields={})
 
-    runbook = generate(candidate, _fingerprint(), _decision(), _forecast(), taxonomy_entry=entry)
+    markdown = generate(candidate, _fingerprint(), _decision(ElasticRuleType.EQL), _forecast(),
+                        taxonomy_entry=entry).markdown
 
-    assert "KQL cannot express" in runbook.markdown
-    assert "rlike" in runbook.markdown
+    assert "```eql" in markdown
+    assert "any where Action" in markdown
+
+
+def test_an_entry_whose_logic_is_not_valid_sigma_is_reported_not_hidden():
+    entry = TaxonomyEntry(
+        slug="test", name="Test entry", confidence=0.8,
+        detection_logic={"sel": {"Action": ["block"]}, "condition": "sel and missing_block"},
+    )
+    candidate = _candidate(source=MatchSource.INTERNAL_TAXONOMY, rule_ref="internal:test", matched_fields={})
+
+    markdown = generate(candidate, _fingerprint(), _decision(), _forecast(),
+                        taxonomy_entry=entry).markdown
+
+    assert "Conversion did not produce a query" in markdown
+    assert "by hand" in markdown
+
+
+def test_the_same_entry_always_converts_to_the_same_rule_id():
+    """A rule id that moved every run would look like a different rule each time."""
+    from engine.runbook.generator import _entry_as_sigma_rule
+
+    entry = TaxonomyEntry(slug="stable-slug", name="Test entry", confidence=0.8,
+                          detection_logic={"sel": {"Action": ["block"]}, "condition": "sel"})
+
+    assert str(_entry_as_sigma_rule(entry).id) == str(_entry_as_sigma_rule(entry).id)
 
 
 def test_conversion_failure_is_reported_not_hidden():
