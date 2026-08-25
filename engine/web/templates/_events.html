@@ -31,16 +31,25 @@
         <tr>
           <td class="num">{{ example.line }}</td>
           {% if show_time %}
-          <td class="small">
-            <code>{{ example.raw_timestamp or '-' }}</code>
-            {% if not example.timestamp %}
-              <span class="badge bad">unreadable</span>
-            {% elif not example.timestamp.startswith((example.raw_timestamp or '').rstrip('Zz').replace(' ', 'T')) %}
-              <div class="muted">&rarr; {{ example.timestamp }}</div>
-            {% endif %}
+          <td>
+            <div class="cell tight">
+              <code>{{ example.raw_timestamp or '-' }}</code>
+              {% if not example.timestamp %}
+                <span class="badge bad">unreadable</span>
+              {% elif not example.timestamp.startswith((example.raw_timestamp or '').rstrip('Zz').replace(' ', 'T')) %}
+                <div class="muted">&rarr; {{ example.timestamp }}</div>
+              {% endif %}
+            </div>
           </td>
           {% endif %}
-          {% for name in columns %}<td class="small">{% if values.get(name) %}<code>{{ values[name] }}</code>{% else %}<span class="muted">-</span>{% endif %}</td>{% endfor %}
+          {%- for name in columns %}
+          <td>
+            <div class="cell">
+              {%- if values.get(name) %}<code>{{ values[name] }}</code>
+              {%- else %}<span class="muted">-</span>{% endif -%}
+            </div>
+          </td>
+          {%- endfor %}
         </tr>
       {% endfor %}
       </tbody>
@@ -56,7 +65,10 @@
     <div class="body">
       <table class="kv">
         {% for name, value in first.key_fields + first.other_fields %}
-        <tr><th><code>{{ name }}</code></th><td class="small"><code>{{ value }}</code></td></tr>
+        <tr>
+          <th><code>{{ name }}</code></th>
+          <td class="small"><div class="cell"><code>{{ value }}</code></div></td>
+        </tr>
         {% endfor %}
         {% if first.omitted_fields %}
         <tr><th></th><td class="muted small">and {{ first.omitted_fields }} more field(s)</td></tr>

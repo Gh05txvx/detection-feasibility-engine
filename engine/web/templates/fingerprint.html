@@ -10,8 +10,8 @@
 <p class="subtitle">Job {{ job.job_id }} &middot; {{ result.sample.format }}{% if result.sample.truncated %}, truncated by limit{% endif %}</p>
 
 <nav class="steps">
-  <span class="current">1. Structure &amp; fingerprint</span>
-  <a href="/jobs/{{ job.job_id }}/results">2. Matching results &rarr;</a>
+  <span class="current"><span class="step-n">1</span> Structure &amp; fingerprint</span>
+  <a href="/jobs/{{ job.job_id }}/results"><span class="step-n">2</span> Matching results</a>
 </nav>
 
 <div class="stats">

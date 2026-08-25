@@ -132,6 +132,46 @@ Built:
 
 | 1.7 | ~~**Show the evidence on every result card.**~~ **Done 2026-08-24.** Both outcomes now carry the event time, real sample events, and — on the rejection path — a field-by-field account of what is missing. Below. | eng | done |
 
+| 1.8 | ~~**Visual pass, and four table bugs.**~~ **Done 2026-08-25.** The stylesheet was rebuilt around a deeper palette, real elevation and a working sticky header. Four table bugs found and fixed — details below. | eng | done |
+
+### 1.8 — four table bugs, all from one line of CSS
+
+`.table-wrap { overflow: hidden }` was there to clip the rounded corners. It cost
+four things, and none of them announced themselves:
+
+1. **The sticky header never stuck.** `overflow: hidden` makes an element the
+   nearest scroll container for `position: sticky` inside it. `.table-wrap` never
+   scrolls vertically, so a header written as `top: var(--header-h)` — deliberately
+   the height of the site bar — had no scroll range to stick within. Scrolling a
+   19-field table simply lost the column names.
+2. **The horizontal scrollbar ate the last row.** `.table-scroll { overflow-x: auto }`
+   landed on top of it, computing to `overflow-y: hidden`. On Windows the
+   scrollbar is laid inside the box and the box cannot grow, so the bottom row
+   was clipped behind it.
+3. **`max-width` on a `<td>` does nothing.** In auto table layout browsers treat it
+   as advisory and size to content, so one 160-character `message` stretched the
+   events table far off-screen. The cap now lives on a block inside the cell,
+   which does honour it.
+4. **`width: max-content` fought the wrapping.** It measures the unbroken width, so
+   `word-break` inside never got a chance. Removed.
+
+Corners are rounded on the edge cells instead, and sticky is now opt-in
+(`.table-wrap > table`) — a four-row table inside a card has nothing to stick for,
+and a header that detaches from one mid-scroll reads as a fault.
+
+The visual pass: a deeper, more saturated palette with a proper dark mode;
+three elevation levels instead of one flat shadow; a translucent blurred header;
+numbered step pills; stat tiles with a state-coloured hairline so the tile reads
+before its number does; circular rank badges; a rotating chevron on every
+disclosure; zebra striping and row highlight on the standalone tables only;
+`:focus-visible` rings throughout; and `prefers-reduced-motion` honoured globally
+rather than per-animation.
+
+Two constraints held the whole way: no web fonts and no CDN, so every face is a
+system font; and anything using `color-mix()` either has an `@supports` fallback
+or degrades to something that still carries the meaning — a state colour is never
+allowed to disappear because a browser is a version behind.
+
 ### 1.7 — a verdict a reviewer can check
 
 Every card stated a conclusion and nothing a reviewer could weigh it against.
