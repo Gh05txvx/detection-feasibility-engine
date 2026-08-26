@@ -216,6 +216,58 @@ def test_an_entry_whose_logic_is_not_valid_sigma_is_reported_not_hidden():
     assert "by hand" in markdown
 
 
+def test_a_regex_query_warns_that_lucene_will_not_run_it_as_written():
+    """Sigma is PCRE; Elastic's engine is not. The gap is silent, so it is stated."""
+    entry = TaxonomyEntry(
+        slug="test", name="Test entry", confidence=0.8,
+        detection_logic={
+            "payload": {"Query|re": r"(?i)union\s+select|\.env$"},
+            "condition": "payload",
+        },
+    )
+    candidate = _candidate(source=MatchSource.INTERNAL_TAXONOMY, rule_ref="internal:test", matched_fields={})
+
+    markdown = generate(candidate, _fingerprint(), _decision(), _forecast(),
+                        taxonomy_entry=entry).markdown
+
+    assert "will not run as written" in markdown
+    assert "anchored" in markdown
+    assert "reads as the letter `s`" in markdown
+    assert "no inline flags" in markdown
+    assert "not anchors" in markdown
+    # The backtest is evaluated in Python and stays correct; say so.
+    assert "still right" in markdown
+
+
+def test_a_query_without_a_regex_gets_no_portability_warning():
+    entry = TaxonomyEntry(
+        slug="test", name="Test entry", confidence=0.8,
+        detection_logic={"sel": {"Action": ["block"]}, "condition": "sel"},
+    )
+    candidate = _candidate(source=MatchSource.INTERNAL_TAXONOMY, rule_ref="internal:test", matched_fields={})
+
+    markdown = generate(candidate, _fingerprint(), _decision(), _forecast(),
+                        taxonomy_entry=entry).markdown
+
+    assert "will not run as written" not in markdown
+
+
+def test_a_negated_character_class_is_not_mistaken_for_an_anchor():
+    """`[^}]` is a negated class, which Lucene supports; only a real ^ is a problem."""
+    entry = TaxonomyEntry(
+        slug="test", name="Test entry", confidence=0.8,
+        detection_logic={"payload": {"Query|re": r"\$\{[^}]{1,100}\}"}, "condition": "payload"},
+    )
+    candidate = _candidate(source=MatchSource.INTERNAL_TAXONOMY, rule_ref="internal:test", matched_fields={})
+
+    markdown = generate(candidate, _fingerprint(), _decision(), _forecast(),
+                        taxonomy_entry=entry).markdown
+
+    assert "not anchors" not in markdown
+    # It still warns about anchoring, which applies to every regex here.
+    assert "will not run as written" in markdown
+
+
 def test_the_same_entry_always_converts_to_the_same_rule_id():
     """A rule id that moved every run would look like a different rule each time."""
     from engine.runbook.generator import _entry_as_sigma_rule

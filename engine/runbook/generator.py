@@ -192,6 +192,73 @@ def _draft_query(
     return backend_name, str(queries[0]), None
 
 
+# Where a regular expression sits in each dialect this generator emits. All
+# three are backed by the same engine, so one set of checks covers them.
+_REGEX_LITERAL = {
+    "lucene": re.compile(r":/((?:\\.|[^/\\])+)/"),
+    "eql": re.compile(r'regex~?\s+"((?:\\.|[^"\\])*)"'),
+    "esql": re.compile(r'rlike\s+"((?:\\.|[^"\\])*)"'),
+}
+_CLASS_ESCAPE = re.compile(r"\\([sdwbSDWB])")
+_INLINE_FLAG = re.compile(r"\(\?[a-zA-Z]+\)")
+# `^` straight after `[` opens a negated class, which Lucene does support.
+_REGEX_ANCHOR = re.compile(r"(?<!\\)(?<!\[)[\^$]")
+
+
+def _regex_portability(language: str, query: str) -> list[str]:
+    """Constructs in the drafted query that Lucene's RegExp engine will not honour.
+
+    Lucene RegExp backs all three dialects here - `field:/re/` in Lucene query
+    string, EQL's `regex`/`regex~`, and ES|QL's `RLIKE` - and it is not PCRE.
+    Sigma is written in PCRE, so this is not a quirk of the internal taxonomy:
+    131 of the 231 regex clauses in the local SigmaHQ checkout use a class escape
+    that Lucene reads as a literal letter.
+
+    Worth stating in the runbook rather than fixing silently, because the fix
+    changes what the rule matches, and that is the reviewer's call. The backtest
+    figures are unaffected: those come from evaluating the rule's own logic in
+    Python, which is the honest reading. It is the drafted query that would not
+    reproduce them.
+    """
+    extractor = _REGEX_LITERAL.get(language)
+    if extractor is None:
+        return []
+    patterns = extractor.findall(query)
+    if not patterns:
+        return []
+
+    notes: list[str] = [
+        "**Lucene's regex engine is anchored:** a pattern has to match the *whole* field "
+        "value, not a part of it. These are written as substring searches, so each one "
+        "needs `.*` at both ends before it will match anything."
+    ]
+
+    classes = sorted({escape for pattern in patterns for escape in _CLASS_ESCAPE.findall(pattern)})
+    if classes:
+        spelled = ", ".join(f"`\\{escape}` reads as the letter `{escape}`" for escape in classes)
+        notes.append(
+            f"**There are no character classes:** a backslash escapes the next literal "
+            f"character, so {spelled}. This one is silent - the query runs and quietly "
+            f"matches something else."
+        )
+
+    if any(_INLINE_FLAG.search(pattern) for pattern in patterns):
+        found = sorted({flag for pattern in patterns for flag in _INLINE_FLAG.findall(pattern)})
+        notes.append(
+            f"**There are no inline flags:** {', '.join(f'`{flag}`' for flag in found)} is a parse "
+            "error rather than a modifier. For case-insensitivity use EQL's `regex~` operator, or "
+            "write both cases into the pattern."
+        )
+
+    if any(_REGEX_ANCHOR.search(pattern) for pattern in patterns):
+        notes.append(
+            "**`^` and `$` are literal characters here**, not anchors. Since the match is already "
+            "anchored to the whole value, an intended `$` should just be dropped."
+        )
+
+    return notes
+
+
 def _backend_for(elastic_type: ElasticRuleType) -> tuple[str, Any]:
     from sigma.backends.elasticsearch import EqlBackend, ESQLBackend, LuceneBackend
 
@@ -375,6 +442,19 @@ def _render(
         ])
     else:
         lines.extend([f"```{language}", query, "```", ""])
+        portability = _regex_portability(language, query)
+        if portability:
+            lines.extend([
+                "**This query will not run as written.** It uses regular expressions, and "
+                "Elastic's regex engine is not the one Sigma is written against:",
+                "",
+                *(f"- {note}" for note in portability),
+                "",
+                "The trigger counts below are still right - they come from evaluating the "
+                "rule's own logic, not this query. Fixing the pattern changes what the rule "
+                "matches, so it is left to the reviewer rather than rewritten here.",
+                "",
+            ])
 
     # Outside the branch above on purpose: the aggregation is configuration, not
     # query text, so a conversion failure is no reason to withhold it. It used to
