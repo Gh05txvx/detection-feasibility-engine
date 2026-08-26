@@ -239,6 +239,23 @@ def test_a_regex_query_warns_that_lucene_will_not_run_it_as_written():
     assert "still right" in markdown
 
 
+def test_a_regex_already_written_for_lucene_gets_no_warning():
+    """Anchored, no class escapes, no inline flags: nothing left to say."""
+    entry = TaxonomyEntry(
+        slug="test", name="Test entry", confidence=0.8,
+        detection_logic={
+            "payload": {"Query|re": r".*([uU][nN][iI][oO][nN][ \t]+[sS][eE][lL][eE][cC][tT]).*"},
+            "condition": "payload",
+        },
+    )
+    candidate = _candidate(source=MatchSource.INTERNAL_TAXONOMY, rule_ref="internal:test", matched_fields={})
+
+    markdown = generate(candidate, _fingerprint(), _decision(), _forecast(),
+                        taxonomy_entry=entry).markdown
+
+    assert "will not run as written" not in markdown
+
+
 def test_a_query_without_a_regex_gets_no_portability_warning():
     entry = TaxonomyEntry(
         slug="test", name="Test entry", confidence=0.8,

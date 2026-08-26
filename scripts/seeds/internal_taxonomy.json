@@ -39,13 +39,15 @@
           "RuleID": ["100015"]
         },
         "sqli_payload": {
-          "ClientRequestQuery|re": "(?i)(union[\\s/*]+select|select[\\s/*]+.*[\\s/*]+from[\\s/*]|\\bor\\b\\s+1\\s*=\\s*1|'\\s*or\\s*'|sleep\\s*\\(|benchmark\\s*\\(|information_schema|xp_cmdshell|waitfor\\s+delay)"
+          "ClientRequestQuery|re": ".*([uU][nN][iI][oO][nN][ \\t/*]+[sS][eE][lL][eE][cC][tT]|[sS][eE][lL][eE][cC][tT][ \\t/*]+.*[ \\t/*]+[fF][rR][oO][mM][ \\t/*]|[^a-zA-Z][oO][rR][ \\t]+1[ \\t]*=[ \\t]*1|'[ \\t]*[oO][rR][ \\t]*'|[sS][lL][eE][eE][pP][ \\t]*\\(|[bB][eE][nN][cC][hH][mM][aA][rR][kK][ \\t]*\\(|[iI][nN][fF][oO][rR][mM][aA][tT][iI][oO][nN]_[sS][cC][hH][eE][mM][aA]|[xX][pP]_[cC][mM][dD][sS][hH][eE][lL][lL]|[wW][aA][iI][tT][fF][oO][rR][ \\t]+[dD][eE][lL][aA][yY]).*"
         },
         "condition": "waf_managed_block or sqli_payload"
       },
       "assumptions": [
         "ClientRequestQuery is URL-decoded during ingestion. Undecoded, '+' stands in for a space and the \\s in this regex stops matching: on the shipped fixture that costs 1 of 5 SQLi events.",
         "RuleID scopes the waf_managed_block branch to the SQLi managed rules. Without it the branch fires on every WAF block, SQLi or not. The value here, 100015, is a placeholder from the shipped fixture and has NOT been confirmed against a real ruleset. Checked 2026-08-24: the team's production Cloudflare data reaches Sentinel as the HTTP-requests dataset, which carries no RuleID field at all, so there was nothing to confirm it against. This branch therefore only applies to a firewall_events-shaped log; for the HTTP-requests shape the equivalent discriminator is WAFSQLiAttackScore, and 'cloudflare-waf-low-attack-score-not-blocked' covers that path.",
+        "The pattern is written for Lucene's regex engine, which is what Elastic uses and which is not PCRE. Three things follow. It is wrapped in .* because Lucene anchors a pattern to the whole field value. \\s is spelled [ \\t] because a backslash escape in Lucene is a literal character, not a class - the field arrives URL-decoded, so a real space or tab is what appears. And case-insensitivity is spelled as [uU][nN]... rather than (?i), which Lucene rejects as a parse error. A lowercase ingest processor on the field would let all of that collapse back to plain lowercase literals.",
+        "One narrowing, deliberate: \\bor\\b became [^a-zA-Z]or, because Lucene has no word boundary. A query string whose value *begins* with 'or 1=1' and has nothing in front of it is therefore missed. In a real query string the value is always preceded by '=' or '&', so this costs the case where the whole field is the payload and nothing else.",
         "This logic is written for log analysis, keying on ClientRequestPath and ClientRequestQuery separately as Logpush firewall_event delivers them. The team's own Cloudflare custom rules match http.request.uri, path and query combined; if this entry is ever turned into a custom rule, the fields have to be joined.",
         "If deployed as a Cloudflare custom rule rather than an Elastic one: the regex operator 'matches' is Enterprise-plan only, and Cloudflare's engine is RE2, which has no backreferences and no lookaround. This pattern uses neither, so it ports as written."
       ],
@@ -129,17 +131,18 @@
       "optional_fields": ["Action", "Source", "RuleID", "ClientRequestUserAgent", "EdgeResponseStatus"],
       "detection_logic": {
         "traversal_in_path": {
-          "ClientRequestPath|re": "(?i)(\\.\\./|\\.\\.%2[fF]|%2e%2e%2f|%252e%252e%252f|\\.\\.\\\\|%c0%ae%c0%ae)"
+          "ClientRequestPath|contains": ["../", "..%2f", "..%2F", "%2e%2e%2f", "%2E%2E%2F", "%252e%252e%252f", "%252E%252E%252F", "..\\", "%c0%ae%c0%ae", "%C0%AE%C0%AE"]
         },
         "traversal_in_query": {
-          "ClientRequestQuery|re": "(?i)(\\.\\./|\\.\\.%2[fF]|%2e%2e%2f|%252e%252e%252f|\\.\\.\\\\|%c0%ae%c0%ae)"
+          "ClientRequestQuery|contains": ["../", "..%2f", "..%2F", "%2e%2e%2f", "%2E%2E%2F", "%252e%252e%252f", "%252E%252E%252F", "..\\", "%c0%ae%c0%ae", "%C0%AE%C0%AE"]
         },
         "condition": "traversal_in_path or traversal_in_query"
       },
       "assumptions": [
-        "The source rule matches http.request.uri, path and query together. Logpush delivers those as two fields, so the same pattern is applied to each and the results OR'd. Matching the path alone would miss payloads in the query string, which the source document calls mandatory to cover.",
-        "(?i) was moved from mid-pattern to the front. RE2 accepts an inline flag anywhere; Python rejects one that is not at the start, so the pattern would not compile here as written. Moving it also applies case-insensitivity to the whole expression, which is exactly what the source document recommends as its first improvement: %2E%2E%2F was not covered before.",
-        "If ported back to a Cloudflare custom rule: the 'matches' operator is Enterprise-plan only, and RE2 supports no backreferences or lookaround. This pattern uses neither."
+        "The source rule matches http.request.uri, path and query together. Logpush delivers those as two fields, so the same list is applied to each and the results OR'd. Matching the path alone would miss payloads in the query string, which the source document calls mandatory to cover.",
+        "Written as a literal list rather than a regex, because every branch of the original was a literal. Elastic's regex engine is Lucene's, which is anchored to the whole field value and has no inline flags, so the regex form drafted a query that could not run; a contains list converts to wildcards, which Lucene does support. Nothing about what this matches changed.",
+        "Both cases of each percent-encoding are listed. Sigma matches values case-insensitively, so one form would be enough for the taxonomy matcher and the backtest, but the Lucene query those convert to is case-sensitive. Listing both is what makes the generated query agree with the entry.",
+        "If ported back to a Cloudflare custom rule: the 'matches' operator is Enterprise-plan only, and RE2 supports no backreferences or lookaround. This pattern used neither, and as a literal list the question no longer arises."
       ],
       "mitre_techniques": ["T1190"],
       "suggested_rule_type": "custom_query",
@@ -163,14 +166,20 @@
       "required_fields": ["Datetime", "ClientIP", "ClientRequestHost", "ClientRequestPath"],
       "optional_fields": ["Action", "ClientRequestUserAgent", "EdgeResponseStatus", "ClientASN"],
       "detection_logic": {
-        "sensitive_path": {
-          "ClientRequestPath|re": "(?i)(\\.env$|\\.env\\?|\\.git/|\\.svn/|\\.idea/|wp-admin|wp-login|\\.aws/credentials|id_rsa|\\.ssh/|config\\.php|web\\.config|\\.htpasswd|\\.npmrc|\\.dockercfg|docker-compose\\.ya?ml|\\.DS_Store|composer\\.lock|package-lock\\.json)"
+        "dotenv": {
+          "ClientRequestPath|endswith": ".env"
         },
-        "condition": "sensitive_path"
+        "sensitive_path": {
+          "ClientRequestPath|contains": [".git/", ".svn/", ".idea/", "wp-admin", "wp-login", ".aws/credentials", "id_rsa", ".ssh/", "config.php", "web.config", ".htpasswd", ".npmrc", ".dockercfg", "docker-compose.yml", "docker-compose.yaml", ".DS_Store", "composer.lock", "package-lock.json"]
+        },
+        "condition": "dotenv or sensitive_path"
       },
       "assumptions": [
         "Path only, not the query string. That is what the source rule does, because these are filenames rather than payloads.",
-        "wp-admin and wp-login stay in scope even where the client runs no WordPress. That is the point: on a non-WordPress site such a request is a strong signal of a generic scanner, since mass scanning does not know the target's stack."
+        "wp-admin and wp-login stay in scope even where the client runs no WordPress. That is the point: on a non-WordPress site such a request is a strong signal of a generic scanner, since mass scanning does not know the target's stack.",
+        "Written as a literal list rather than a regex, because every branch of the original was a literal. Elastic's regex engine is Lucene's, which is anchored to the whole field value and reads $ as a literal character, so the regex form drafted a query that could not run.",
+        ".env is matched with endswith rather than contains, which is what the original's '\\.env$|\\.env\\?' was for: it keeps .env.example and .env.sample out. The '?' half of that alternation is dropped because it only mattered when path and query were one field; ClientRequestPath never contains a query string.",
+        "Sigma matches values case-insensitively but the Lucene query it converts to is case-sensitive, so a request for /.ENV would be caught by the taxonomy matcher and missed by the drafted rule. Unlike the percent-encodings in the path-traversal entry, filename case is not varied often enough to be worth doubling every literal; add the variant if a client's traffic shows it."
       ],
       "mitre_techniques": ["T1595.003"],
       "suggested_rule_type": "custom_query",
@@ -201,16 +210,19 @@
       "optional_fields": ["Action", "Source", "RuleID", "ClientRequestUserAgent", "OriginResponseStatus"],
       "detection_logic": {
         "rce_in_path": {
-          "ClientRequestPath|re": "(?i)(;\\s*(cat|wget|curl|nc|bash|sh|chmod|python)\\s|\\$\\{[^}]{1,100}\\}|`[^`]*`|\\bsystem\\(|\\bexec\\(|\\bpassthru\\(|\\bshell_exec\\(|\\|\\|\\s*(id|whoami|uname)|%0a(id|whoami|cat)|powershell\\s+-enc)"
+          "ClientRequestPath|re": ".*(;[ \\t]*([cC][aA][tT]|[wW][gG][eE][tT]|[cC][uU][rR][lL]|[nN][cC]|[bB][aA][sS][hH]|[sS][hH]|[cC][hH][mM][oO][dD]|[pP][yY][tT][hH][oO][nN])[ \\t]|\\$\\{[^}]{1,100}\\}|`[^`]*`|[^a-zA-Z][sS][yY][sS][tT][eE][mM]\\(|[^a-zA-Z][eE][xX][eE][cC]\\(|[^a-zA-Z][pP][aA][sS][sS][tT][hH][rR][uU]\\(|[^a-zA-Z][sS][hH][eE][lL][lL]_[eE][xX][eE][cC]\\(|\\|\\|[ \\t]*([iI][dD]|[wW][hH][oO][aA][mM][iI]|[uU][nN][aA][mM][eE])|%0[aA]([iI][dD]|[wW][hH][oO][aA][mM][iI]|[cC][aA][tT])|[pP][oO][wW][eE][rR][sS][hH][eE][lL][lL][ \\t]+-[eE][nN][cC]).*"
         },
         "rce_in_query": {
-          "ClientRequestQuery|re": "(?i)(;\\s*(cat|wget|curl|nc|bash|sh|chmod|python)\\s|\\$\\{[^}]{1,100}\\}|`[^`]*`|\\bsystem\\(|\\bexec\\(|\\bpassthru\\(|\\bshell_exec\\(|\\|\\|\\s*(id|whoami|uname)|%0a(id|whoami|cat)|powershell\\s+-enc)"
+          "ClientRequestQuery|re": ".*(;[ \\t]*([cC][aA][tT]|[wW][gG][eE][tT]|[cC][uU][rR][lL]|[nN][cC]|[bB][aA][sS][hH]|[sS][hH]|[cC][hH][mM][oO][dD]|[pP][yY][tT][hH][oO][nN])[ \\t]|\\$\\{[^}]{1,100}\\}|`[^`]*`|[^a-zA-Z][sS][yY][sS][tT][eE][mM]\\(|[^a-zA-Z][eE][xX][eE][cC]\\(|[^a-zA-Z][pP][aA][sS][sS][tT][hH][rR][uU]\\(|[^a-zA-Z][sS][hH][eE][lL][lL]_[eE][xX][eE][cC]\\(|\\|\\|[ \\t]*([iI][dD]|[wW][hH][oO][aA][mM][iI]|[uU][nN][aA][mM][eE])|%0[aA]([iI][dD]|[wW][hH][oO][aA][mM][iI]|[cC][aA][tT])|[pP][oO][wW][eE][rR][sS][hH][eE][lL][lL][ \\t]+-[eE][nN][cC]).*"
         },
         "condition": "rce_in_path or rce_in_query"
       },
       "assumptions": [
         "The source rule matches http.request.uri, path and query together; the same pattern is applied to each Logpush field and OR'd. The document calls covering the query string mandatory here, because that is where the payload usually sits.",
         "Two corrections the pattern's author had already made are carried over: passwthru is spelled passthru, which is the real PHP function and without which that branch could never match anything; and the greedy ${.*} is bounded to ${[^}]{1,100}}, which stops it swallowing an unrelated span of a large JSON body.",
+        "The pattern is written for Lucene's regex engine, which is what Elastic uses and which is not PCRE. It is wrapped in .* because Lucene anchors to the whole field value; \\s is spelled [ \\t] because a backslash escape there is a literal character rather than a class; and case-insensitivity is spelled [sS][yY]... rather than (?i), which Lucene rejects as a parse error. The ${[^}]{1,100}} and `[^`]*` branches are unchanged - negated character classes and bounded repetition are both things Lucene has.",
+        "One narrowing, deliberate: \\bsystem(, \\bexec(, \\bpassthru( and \\bshell_exec( became [^a-zA-Z]system( and so on, because Lucene has no word boundary. A field whose value *begins* with one of those sinks and has nothing in front of it is missed. It also still refuses 'ecosystem(', which is what the boundary was there for.",
+        "%0a is spelled %0[aA] rather than relying on the old (?i) to cover %0A.",
         "If ported back to a Cloudflare custom rule: 'matches' is Enterprise-plan only, and RE2 has no backreferences or lookaround. This pattern uses neither."
       ],
       "mitre_techniques": ["T1190", "T1059"],

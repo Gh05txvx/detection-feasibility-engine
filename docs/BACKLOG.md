@@ -138,6 +138,57 @@ Built:
 
 | 1.10 | ~~**The draft query for taxonomy entries was wrong, not just ugly.**~~ **Done 2026-08-25.** Hand-rolled KQL replaced with the pySigma backends already used for Sigma rules. Three of six seeded entries were shipping a query that matched every event. | eng | done |
 
+| 1.11 | ~~**Make every seeded pattern run on Elastic's engine.**~~ **Done 2026-08-26.** All four regex entries rewritten; two became literal lists. Every entry's drafted query now runs as written. | eng | done |
+
+### 1.11 — writing for the engine that actually runs the query
+
+The 1.10 guard reported the problem; this fixes it. Sigma is PCRE, Elastic is
+Lucene's RegExp, and the two differ in ways that are mostly silent. Verified
+against Elastic's own docs rather than from memory: the pattern must match the
+**entire** field value, `^`/`$` are literal characters, there are no inline
+flags, and a backslash escapes a literal — so `\s` is the letter `s` and `\b` the
+letter `b`. EQL's `regex`/`regex~` and ES|QL's `RLIKE` both link to that same
+syntax page, so all three dialects this engine emits behave alike.
+
+**Two entries stopped using regex.** `path-traversal` and `sensitive-path-access`
+were literal alternations wearing regex syntax — `../`, `..%2f`, `.git/`,
+`id_rsa`. As `|contains` lists they convert to Lucene wildcards, which are
+supported, and nothing about what they match changed. `sensitive-path-access`
+keeps its one genuinely non-literal branch as `|endswith: .env`, which is what
+the original's `\.env$` was for: it is what keeps `.env.example` out.
+
+**Two entries kept regex, rewritten for Lucene.** `sqli` and `rce` need real
+alternation and quantifiers. Wrapped in `.*`; `\s` spelled `[ \t]`; `(?i)`
+replaced by per-letter classes (`[uU][nN][iI][oO][nN]`). Verbose, and
+self-contained — a `lowercase` ingest processor on the field would let it
+collapse back to plain literals, which is worth doing if these ever grow.
+
+**Two narrowings, both deliberate and both recorded on the entries.** Lucene has
+no `\b`, so `\bor\b` became `[^a-zA-Z]or` and `\bsystem\(` became
+`[^a-zA-Z]system\(`. A field whose value *begins* with the payload and has
+nothing in front of it is now missed. In a real query string the value is always
+preceded by `=` or `&`, so this costs the case where the whole field is the
+payload. The boundary's actual job survives: `ecosystem(` is still refused.
+
+**Case-insensitivity is where Sigma and Elastic disagree, and it is not fixable
+in the pattern alone.** Sigma compares values case-insensitively; the Lucene
+query it converts to is case-sensitive. For `path-traversal` both cases of every
+percent-encoding are now listed, because `%2F` is as common as `%2f` in the wild.
+For `sensitive-path-access` they are not, because filename case is not varied
+often enough to justify doubling 18 literals — recorded on the entry instead.
+
+Verified with a harness that runs 82 payloads through both readings: Python
+`re.search` with Sigma's case rules, and `re.fullmatch` with Elastic's. The
+second is a faithful stand-in *because* the patterns now use only constructs
+Lucene shares with Python, which a test asserts. Baseline was 60 disagreements
+and 10 unsupported constructs; both are now zero.
+
+Three tests keep it that way: no seeded regex may use a class escape, an inline
+flag, an anchor or a Lucene-reserved character; every seeded regex must be
+`.*`-wrapped; and every documented payload must fire under *both* readings.
+Without the first, a `\s` added later would pass every behaviour test — Python
+honours it — while the drafted query quietly matched the letter `s`.
+
 ### 1.10 — the hand-rolled KQL was emitting `true`
 
 Asked whether sigma-cli's default output was the ugly one. It was not; ours was,

@@ -167,6 +167,46 @@ def _pattern(slug: str, field: str) -> str:
     raise AssertionError(f"{slug} has no regex on {field}")
 
 
+def _fires(slug: str, field: str, value: str, *, lucene: bool = False) -> bool:
+    """Does any clause on `field` fire on `value`, under one of two readings?
+
+    ``lucene=False`` is Sigma's own and is what the taxonomy matcher and the
+    backtest implement: literals compared case-insensitively, regex unanchored.
+
+    ``lucene=True`` is what Elastic actually runs: literals case-sensitive,
+    regex anchored to the whole field value. A pattern that only passes the
+    first drafts a rule that cannot run, which is the gap docs/BACKLOG.md 1.11
+    closed. Both are asserted so it cannot quietly reopen.
+    """
+    entries = {e.slug: e for e in taxonomy_store.load_entries_from_json(DEFAULT_SEED_FILE)}
+    for block in entries[slug].detection_logic.values():
+        if not isinstance(block, dict):
+            continue
+        for raw, spec in block.items():
+            name, _, modifier_text = str(raw).partition("|")
+            if name != field:
+                continue
+            modifiers = [m for m in modifier_text.split("|") if m]
+            for item in (spec if isinstance(spec, list) else [spec]):
+                item = str(item)
+                if "re" in modifiers:
+                    hit = re.fullmatch(item, value) if lucene else re.search(item, value)
+                elif "endswith" in modifiers:
+                    hit = (value.endswith(item) if lucene
+                           else value.lower().endswith(item.lower()))
+                elif "contains" in modifiers:
+                    hit = item in value if lucene else item.lower() in value.lower()
+                else:
+                    hit = item == value if lucene else item.lower() == value.lower()
+                if hit:
+                    return True
+    return False
+
+
+def _both(slug: str, field: str, value: str) -> tuple[bool, bool]:
+    return _fires(slug, field, value), _fires(slug, field, value, lucene=True)
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -176,37 +216,64 @@ def _pattern(slug: str, field: str) -> str:
         "%252e%252e%252fetc",
         r"..\..\windows\win.ini",
         "%c0%ae%c0%ae%c0%afetc",
-        "%2E%2E%2Fetc",  # uppercase: only works because (?i) was moved to the front
+        "%2E%2E%2Fetc",  # uppercase, which the lowercase-only list would miss
     ],
 )
-def test_path_traversal_pattern_covers_its_documented_encodings(payload):
-    assert re.search(_pattern("cloudflare-waf-path-traversal", "ClientRequestPath"), payload)
+def test_path_traversal_covers_its_documented_encodings(payload):
+    assert _both("cloudflare-waf-path-traversal", "ClientRequestPath", payload) == (True, True)
 
 
 @pytest.mark.parametrize(
     "payload",
     ["/.env", "/portal/.git/HEAD", "/wp-login.php", "/admin/config.php", "/web.config",
-     "/docker-compose.yml", "/.aws/credentials", "/x/id_rsa"],
+     "/docker-compose.yml", "/docker-compose.yaml", "/.aws/credentials", "/x/id_rsa",
+     "/.ssh/id_rsa", "/.htpasswd", "/.npmrc", "/.dockercfg", "/.DS_Store",
+     "/composer.lock", "/package-lock.json", "/wp-admin/install.php", "/.svn/entries"],
 )
-def test_sensitive_path_pattern_covers_its_documented_artefacts(payload):
-    assert re.search(_pattern("cloudflare-waf-sensitive-path-access", "ClientRequestPath"), payload)
+def test_sensitive_path_covers_its_documented_artefacts(payload):
+    assert _both("cloudflare-waf-sensitive-path-access", "ClientRequestPath", payload) == (True, True)
+
+
+@pytest.mark.parametrize("sample", ["/.env.example", "/.env.sample"])
+def test_a_dotenv_sample_file_is_not_an_exposed_dotenv(sample):
+    """What the original's `\\.env$` was for; endswith is how it survives Lucene."""
+    assert _both("cloudflare-waf-sensitive-path-access", "ClientRequestPath", sample) == (False, False)
 
 
 @pytest.mark.parametrize(
     "payload",
     ["?cmd=;cat /etc/passwd", "${jndi:ldap://x.example/a}", "?q=`id`", "?x=system(",
-     "?x=passthru(", "?a=1 || whoami", "?a=%0aid", "?p=powershell -enc AAA"],
+     "?x=passthru(", "?x=shell_exec(", "?a=1 || whoami", "?a=%0aid", "?a=%0Aid",
+     "?p=powershell -enc AAA", "?p=PowerShell -enc AAA"],
 )
-def test_rce_pattern_covers_its_documented_sinks(payload):
-    assert re.search(_pattern("cloudflare-waf-rce-command-injection", "ClientRequestQuery"), payload)
+def test_rce_covers_its_documented_sinks(payload):
+    assert _both("cloudflare-waf-rce-command-injection", "ClientRequestQuery", payload) == (True, True)
 
 
-def test_the_rce_pattern_spells_passthru_correctly():
+@pytest.mark.parametrize(
+    "payload",
+    ["id=1 UNION SELECT 1", "id=1 UnIoN SeLeCt 1", "id=1 union/**/select 1",
+     "id=1 OR 1=1", "q=select name from users", "id=1' or '", "id=1 AND sleep(5)",
+     "t=information_schema.tables", "x=xp_cmdshell", "x=waitfor delay '0:0:5'"],
+)
+def test_sqli_covers_its_documented_payloads(payload):
+    assert _both("cloudflare-waf-sqli", "ClientRequestQuery", payload) == (True, True)
+
+
+def test_the_rce_pattern_still_spells_passthru_correctly():
     """The source pattern had passwthru, which can never match the real PHP function."""
-    pattern = _pattern("cloudflare-waf-rce-command-injection", "ClientRequestQuery")
+    assert _both("cloudflare-waf-rce-command-injection", "ClientRequestQuery",
+                 "?x=passthru(ls)") == (True, True)
+    assert _both("cloudflare-waf-rce-command-injection", "ClientRequestQuery",
+                 "?x=passwthru(ls)") == (False, False)
 
-    assert "passthru" in pattern
-    assert "passwthru" not in pattern
+
+def test_the_rce_word_boundary_survived_losing_word_boundaries():
+    """Lucene has no \\b; the substitute still has to refuse 'ecosystem('."""
+    assert _both("cloudflare-waf-rce-command-injection", "ClientRequestQuery",
+                 "q=ecosystem(1)") == (False, False)
+    assert _both("cloudflare-waf-rce-command-injection", "ClientRequestQuery",
+                 "q=system(1)") == (True, True)
 
 
 def test_the_rce_pattern_bounds_its_expression_match():
@@ -218,7 +285,8 @@ def test_the_rce_pattern_bounds_its_expression_match():
 
 @pytest.mark.parametrize(
     "clean",
-    ["/products", "/id/news/blog", "?category=shoes&page=2", "/portal/default.aspx"],
+    ["/products", "/id/news/blog", "?category=shoes&page=2", "/portal/default.aspx",
+     "/blog/environment", "/configuration/index.html", "/docs/2.4.1/release"],
 )
 def test_the_ported_patterns_leave_ordinary_traffic_alone(clean):
     for slug, field in (
@@ -226,7 +294,52 @@ def test_the_ported_patterns_leave_ordinary_traffic_alone(clean):
         ("cloudflare-waf-sensitive-path-access", "ClientRequestPath"),
         ("cloudflare-waf-rce-command-injection", "ClientRequestPath"),
     ):
-        assert not re.search(_pattern(slug, field), clean), f"{slug} fired on {clean}"
+        assert _both(slug, field, clean) == (False, False), f"{slug} fired on {clean}"
+
+
+# Constructs Lucene's RegExp engine does not have, plus the characters it
+# reserves. See docs/BACKLOG.md 1.11.
+_NOT_IN_LUCENE = (
+    (re.compile(r"\\[sdwbSDWB]"), "class escape: a backslash escapes a literal in Lucene"),
+    (re.compile(r"\(\?[a-zA-Z]"), "inline flag: Lucene has none, and it is a parse error"),
+    (re.compile(r"(?<!\\)(?<!\[)[\^$]"), "anchor: ^ and $ are literal characters in Lucene"),
+    (re.compile(r"(?<!\\)[@&~<>#\"]"), "unescaped character Lucene reserves"),
+)
+
+
+def test_no_seeded_regex_uses_a_construct_elastic_cannot_run():
+    """Sigma is PCRE; Elastic's engine is Lucene's, and the gap is silent.
+
+    Without this, a `\\s` added to an entry would keep passing every behaviour
+    test above - Python honours it - while the drafted Elastic query quietly
+    matched the letter s instead.
+    """
+    problems = []
+    for entry in taxonomy_store.load_entries_from_json(DEFAULT_SEED_FILE):
+        for block, spec in entry.detection_logic.items():
+            if not isinstance(spec, dict):
+                continue
+            for raw, value in spec.items():
+                if "|re" not in str(raw):
+                    continue
+                for probe, why in _NOT_IN_LUCENE:
+                    if probe.search(str(value)):
+                        problems.append(f"{entry.slug}.{block}.{raw}: {why}")
+
+    assert problems == []
+
+
+def test_every_seeded_regex_is_anchored_for_lucene():
+    """Lucene matches the whole field value, so a substring search needs .* ends."""
+    for entry in taxonomy_store.load_entries_from_json(DEFAULT_SEED_FILE):
+        for spec in entry.detection_logic.values():
+            if not isinstance(spec, dict):
+                continue
+            for raw, value in spec.items():
+                if "|re" not in str(raw):
+                    continue
+                assert str(value).startswith(".*"), f"{entry.slug}: {raw} is not anchored"
+                assert str(value).endswith(".*"), f"{entry.slug}: {raw} is not anchored"
 
 
 def test_attack_score_entry_fires_only_when_the_payload_was_not_blocked():

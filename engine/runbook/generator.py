@@ -227,11 +227,16 @@ def _regex_portability(language: str, query: str) -> list[str]:
     if not patterns:
         return []
 
-    notes: list[str] = [
-        "**Lucene's regex engine is anchored:** a pattern has to match the *whole* field "
-        "value, not a part of it. These are written as substring searches, so each one "
-        "needs `.*` at both ends before it will match anything."
-    ]
+    notes: list[str] = []
+
+    # A pattern already wrapped in `.*` has been written for this engine, so
+    # saying it needs wrapping would be wrong as well as noisy.
+    if not all(p.startswith(".*") and p.endswith(".*") for p in patterns):
+        notes.append(
+            "**Lucene's regex engine is anchored:** a pattern has to match the *whole* field "
+            "value, not a part of it. These are written as substring searches, so each one "
+            "needs `.*` at both ends before it will match anything."
+        )
 
     classes = sorted({escape for pattern in patterns for escape in _CLASS_ESCAPE.findall(pattern)})
     if classes:
