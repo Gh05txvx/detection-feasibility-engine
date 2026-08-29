@@ -142,6 +142,76 @@ Built:
 
 | 1.12 | ~~**Download the normalized fields as something deployable.**~~ **Done 2026-08-29.** The Structure page exports the whole field inventory as an ingest pipeline plus an index template, both ready to `PUT`. See below. | eng | done |
 
+| 1.13 | ~~**Two heuristics were naming fields that do not exist in ECS.**~~ **Done 2026-08-30.** `network.port` and `hash.value` removed, and a corpus-vocabulary check added so the next invented name cannot reach a pipeline. See below. | eng | done |
+
+| 1.14 | ~~**W3C/IIS field names mapped by specification.**~~ **Done 2026-08-30.** No IIS export could resolve to its own official integration; the W3C fixture went from 4 fields on ECS to 11 of 12. See below. | eng | done |
+
+### 1.13 — a suggestion that reads as authoritative and points nowhere
+
+Checked every ECS target the engine can emit against the 1,188 field names
+harvested from the corpus (1,019 data streams). Two of them do not appear:
+
+- **`network.port`** — `network.*` in the corpus has 13 fields and no `port`. ECS
+  puts ports on an end of the connection: `source`, `destination`, `client`,
+  `server`. An undirected port now goes unmapped and lands in the vendor
+  namespace, which is the honest answer.
+- **`hash.value`** — the corpus knows `file.hash.md5`, `.sha1`, `.sha256`,
+  `.sha512` and nothing generic. A hash column that will not say which algorithm
+  it holds now goes unmapped rather than being given an invented name; `sha1` and
+  `sha512` were added to the ones that are recognised.
+
+This mattered more than it did a week ago. While a suggestion only appeared on
+the Structure page it was misleading; since 1.12 it is written into a downloadable
+ingest pipeline, so an invented field name goes into a client's cluster.
+
+So `analyse` now also **drops any heuristic suggestion absent from the harvested
+vocabulary**, naming it in the report notes. Two guards on that check, because the
+cost of a wrong drop is a correct mapping silently demoted:
+
+- ECS scalars (`@timestamp`, `message`, `tags`, `labels`) are always accepted.
+  They are ECS by definition, not by whether a pipeline happened to mention them.
+- The vocabulary is only consulted when `pipeline_files > 0` — an index built from
+  no pipeline files holds whatever list it was handed, which is not evidence about
+  what ECS contains, and checking against it would reject correct suggestions.
+
+The vocabulary is harvested from integration pipelines rather than from the ECS
+spec, so it is a subset: a real ECS field that no integration maps would be
+dropped. The trade is deliberate — a dropped field still reaches the index under
+the vendor namespace with the reason printed, whereas an invented one reaches a
+cluster looking correct.
+
+### 1.14 — the grok blind spot, and the one log source it hurt most
+
+`ecs_gap.py` already carried this as a "Known limit": packages whose pipelines
+parse with grok expose no source field names to the indexer. Measured, it is
+narrow but lands badly. Of 1,019 data streams only 7% are affected — but they
+include `iis / access` (7 source names, 4 ECS mappings), `apache / access` (8, 2)
+and `nginx / access` (11, 2). The result: **no IIS export resolves to its own
+official integration**, in the `webserver` category the entire seeded taxonomy is
+written for.
+
+Parsing the grok patterns would not have helped: a W3C line has no field names in
+it, and the sample the engine sees is a *CSV export* of one, where the columns do.
+What made this fixable is that **W3C Extended is a specification with a closed
+field list** — so eighteen names went into `NAME_TO_ECS` outright rather than being
+guessed at, and `_heuristic_ecs_field` now consults that table *first*. A name
+whose meaning is known has to beat a guess from the values: `c-` is the client by
+definition, while entity recognition sees only an IP with no direction word in its
+name and settles for `related.ip`.
+
+On `tests/fixtures/iis_w3c_access.csv`: 4 fields on ECS before, 11 of 12 after.
+
+Four W3C names were deliberately left out, and are worth not "fixing" later
+without thinking: `time-taken` is milliseconds where ECS `event.duration` is
+nanoseconds, and a rename cannot do the multiplication — a mapping that changes
+the unit by six orders of magnitude is worse than none. `sc-substatus`,
+`sc-win32-status` and `s-sitename` are IIS concepts with no ECS field. All four
+still reach the index under the vendor namespace.
+
+Apache and nginx access logs were **not** given the same treatment: CLF has no
+field names at all, so there is nothing to key a table on. If a client ever sends
+a named export of one, that is when to add it.
+
 ### 1.12 — the field inventory, in the form implementation consumes
 
 BLUEPRINT 5.1 already says the field inventory is "input awal buat desain index

@@ -7,7 +7,7 @@ an implementation at a maintained ingest pipeline beats hand-rolling one.
 **Resolution is by data stream fields, never by vendor name.** Phase 0 found
 that `cloudflare` and `cloudflare_logpush` are both "Cloudflare", and only the
 latter has a `firewall_event` data stream matching the sample's shape; a
-vendor-name lookup picks the wrong package. See docs/phase0-smoke-test.md Â§9.
+vendor-name lookup picks the wrong package. See docs/phase0-smoke-test.md §9.
 
 The index is built by reading the ingest pipelines in the clone: a `rename` from
 a source field to a target, plus the `set ... copy_from` chains that follow, is
@@ -85,6 +85,14 @@ _MIN_DISTINCTIVE_FIELDS = 2
 # Unambiguous ops fields, for samples no integration covers. Value-based entity
 # recognition cannot label these: a syslog severity is just a short string, and
 # a hostname like `vpn-gw-01` is not an FQDN.
+#
+# The W3C block exists because the `iis`, `apache` and `nginx` packages parse a
+# whole request line with grok rather than renaming named fields, so they expose
+# almost no source names to the indexer (`iis / access`: 7) and no IIS export
+# resolves to its own official integration. W3C Extended is a *specification*
+# with a closed field list, so those names can be mapped outright instead of
+# guessed at -- `c-` is the client and `s-` the server by definition, which is
+# something entity recognition cannot see in a bare IP.
 NAME_TO_ECS: dict[str, str] = {
     "severity": "log.level",
     "level": "log.level",
@@ -97,7 +105,38 @@ NAME_TO_ECS: dict[str, str] = {
     "computer": "host.name",
     "devname": "observer.name",
     "facility": "log.syslog.facility.name",
+    # W3C Extended / IIS. Both spellings of the prefixed headers, since exports
+    # differ on whether they parenthesise them.
+    "c-ip": "source.ip",
+    "c-port": "source.port",
+    "s-ip": "destination.ip",
+    "s-port": "destination.port",
+    "s-computername": "host.name",
+    "cs-method": "http.request.method",
+    "cs-uri": "url.original",
+    "cs-uri-stem": "url.path",
+    "cs-uri-query": "url.query",
+    "cs-host": "url.domain",
+    "cs-username": "user.name",
+    "cs-bytes": "http.request.bytes",
+    "sc-bytes": "http.response.bytes",
+    "sc-status": "http.response.status_code",
+    "cs-user-agent": "user_agent.original",
+    "cs(user-agent)": "user_agent.original",
+    "cs-referer": "http.request.referrer",
+    "cs(referer)": "http.request.referrer",
 }
+
+# Deliberately absent from the W3C block above, each for a reason:
+#
+# * `time-taken` is milliseconds and ECS `event.duration` is nanoseconds. A
+#   mapping that silently changes the unit by six orders of magnitude is worse
+#   than no mapping, and the rename alone cannot do the multiplication.
+# * `sc-substatus`, `sc-win32-status` and `s-sitename` are IIS's own concepts
+#   with no ECS field to land on.
+#
+# All four still reach the index -- under the vendor namespace, where a rule can
+# read them by name and nobody mistakes them for ECS.
 
 # Fallback suggestions when no official integration covers the field. Keyed by
 # entity type, refined by what the field name says about direction.
@@ -531,9 +570,15 @@ def analyse(
         match = find_integration(index, field_names, product_hint=product_hint)
 
     ecs_vocabulary = set(index.ecs_fields) if index else set()
+    # The vocabulary is only evidence about what ECS *contains* when it was
+    # actually harvested from the corpus. An index assembled from no pipeline
+    # files has whatever list it was handed, which is not a vocabulary, and
+    # checking suggestions against it would reject correct ones.
+    known_ecs = ecs_vocabulary | set(ECS_SCALARS) if index and index.pipeline_files else set()
     mappings = _lookup_table(match.ecs_mappings if match else {})
 
     report = EcsGapReport(integration=match)
+    unverified: list[str] = []
 
     for profile in profiles:
         name = profile.field_name
@@ -555,6 +600,15 @@ def analyse(
             continue
 
         suggestion = _heuristic_ecs_field(profile)
+        if suggestion and known_ecs and suggestion not in known_ecs:
+            # A heuristic that names a field ECS does not define is worse than no
+            # suggestion: it reads as authoritative, goes into a runbook query and
+            # into the generated ingest pipeline, and points at a field no index
+            # will ever hold. The corpus is the only ECS vocabulary available
+            # offline, so it is what a suggestion has to answer to.
+            unverified.append(f"{name} -> {suggestion}")
+            suggestion = None
+
         profile.suggested_ecs_field = suggestion
         if suggestion:
             report.suggested_fields[name] = suggestion
@@ -562,6 +616,16 @@ def analyse(
             report.unmapped_fields.append(name)
 
     _add_notes(report, match, index)
+
+    if unverified:
+        report.notes.append(
+            "Dropped "
+            + str(len(unverified))
+            + " heuristic mapping(s) naming a field that appears nowhere in the integration "
+            "corpus, so it is not an ECS field this stack knows: "
+            + "; ".join(unverified)
+            + ". Those fields are reported as unmapped instead."
+        )
 
     source = find_timestamp_source(profiles)
     if source is not None:
@@ -618,6 +682,14 @@ def _heuristic_ecs_field(profile: FieldProfile) -> str | None:
     """Suggest an ECS field from the entity type and what the name implies."""
     lowered = profile.field_name.lower()
 
+    # A name whose meaning is known beats anything inferred from the values.
+    # `c-ip` is the client address by definition of the W3C format; entity
+    # recognition sees only an IP whose name carries no direction word, and
+    # would settle for `related.ip`.
+    known = NAME_TO_ECS.get(lowered)
+    if known:
+        return known
+
     # A date column and a time column both feed @timestamp once the pipeline
     # joins them; the report's note explains that they are two halves of one field.
     if profile.dtype in {"timestamp", "date", "time"} and _TIME_NAMES.search(lowered):
@@ -625,7 +697,7 @@ def _heuristic_ecs_field(profile: FieldProfile) -> str | None:
 
     entity = profile.entity_type
     if entity is None:
-        return NAME_TO_ECS.get(lowered)
+        return None
 
     # Direction words only mean source/destination for network endpoints. For a
     # user, "target" is the account acted on, not a network peer, so
@@ -639,7 +711,11 @@ def _heuristic_ecs_field(profile: FieldProfile) -> str | None:
     if entity is EntityType.IP:
         return f"{direction}.ip" if direction else "related.ip"
     if entity is EntityType.PORT:
-        return f"{direction}.port" if direction else "network.port"
+        # ECS has no field for a port with no end of the connection attached to
+        # it: ports live on source/destination/client/server. `network.port` was
+        # invented here and exists in no index, so an undirected port goes
+        # unmapped and lands in the vendor namespace.
+        return f"{direction}.port" if direction else None
     if entity is EntityType.USER:
         return "user.name"
     if entity is EntityType.DOMAIN:
@@ -652,12 +728,19 @@ def _heuristic_ecs_field(profile: FieldProfile) -> str | None:
     if entity is EntityType.EMAIL:
         return "email.from.address" if "from" in lowered or "sender" in lowered else "user.email"
     if entity is EntityType.HASH:
-        return "file.hash.sha256" if "sha256" in lowered else "file.hash.md5" if "md5" in lowered else "hash.value"
+        # ECS names the algorithm in the field; there is no generic "a hash of
+        # some kind" field to fall back on. A column that will not say which
+        # algorithm it holds stays unmapped rather than being given an invented
+        # name (`hash.value`) that no index has ever held.
+        for algorithm in ("sha512", "sha256", "sha1", "md5"):
+            if algorithm in lowered:
+                return f"file.hash.{algorithm}"
+        return None
     if entity is EntityType.FILE_PATH:
         return "file.path"
     if entity is EntityType.PROCESS_NAME:
         return "process.name"
-    return NAME_TO_ECS.get(lowered)
+    return None
 
 
 def index_summary(index: IntegrationIndex | None) -> str:

@@ -476,6 +476,78 @@ def test_split_timestamp_is_reported_as_an_ingest_requirement():
     assert profiles[1].suggested_ecs_field == "@timestamp"
 
 
+def test_w3c_names_are_mapped_by_specification_rather_than_guessed():
+    """`iis / access` groks a whole request line, so it exposes almost no source
+    names and no IIS export resolves to it. W3C Extended has a closed field list,
+    which can be mapped outright."""
+    sample = parser.parse(W3C)
+    profiles = profile_fields(sample.records, field_names=sample.field_names)
+
+    report = ecs_gap.analyse(profiles, _index())
+
+    # `c-` is the client by definition. Entity recognition sees only an IP whose
+    # name carries no direction word, and would settle for related.ip.
+    assert report.suggested_fields["c-ip"] == "source.ip"
+    assert report.suggested_fields["cs-method"] == "http.request.method"
+    assert report.suggested_fields["cs-uri-stem"] == "url.path"
+    assert report.suggested_fields["sc-status"] == "http.response.status_code"
+    assert report.suggested_fields["cs-user-agent"] == "user_agent.original"
+    # Milliseconds against ECS's nanosecond event.duration: a rename alone cannot
+    # convert the unit, so no mapping is offered.
+    assert "time-taken" in report.unmapped_fields
+
+
+def test_no_ecs_field_is_invented_for_a_port_or_hash_that_names_neither():
+    profiles = [
+        FieldProfile(field_name="IpPort", dtype="integer", cardinality=9, null_rate=0.0,
+                     entity_type=EntityType.PORT),
+        FieldProfile(field_name="Checksum", dtype="string", cardinality=9, null_rate=0.0,
+                     entity_type=EntityType.HASH),
+        FieldProfile(field_name="FileSha1", dtype="string", cardinality=9, null_rate=0.0,
+                     entity_type=EntityType.HASH),
+    ]
+
+    report = ecs_gap.analyse(profiles, _index())
+
+    # ECS puts ports on an end of the connection and names the hash algorithm in
+    # the field; neither has a generic field to fall back on.
+    assert "IpPort" in report.unmapped_fields
+    assert "Checksum" in report.unmapped_fields
+    assert report.suggested_fields["FileSha1"] == "file.hash.sha1"
+
+
+def test_a_suggestion_naming_a_field_the_corpus_never_heard_of_is_dropped():
+    """A heuristic that reads as authoritative but points at a field no index
+    holds is worse than no suggestion: it reaches the runbook query and the
+    generated ingest pipeline."""
+    harvested = IntegrationIndex(
+        corpus_path="test", fingerprint="test", pipeline_files=12,
+        ecs_fields=["source.ip", "user.name"],
+    )
+    profiles = [
+        FieldProfile(field_name="devname", dtype="string", cardinality=2, null_rate=0.0),
+        FieldProfile(field_name="srcip", dtype="string", cardinality=4, null_rate=0.0,
+                     entity_type=EntityType.IP),
+    ]
+
+    report = ecs_gap.analyse(profiles, harvested)
+
+    assert report.suggested_fields["srcip"] == "source.ip"
+    assert "devname" in report.unmapped_fields          # observer.name is not in this vocabulary
+    assert profiles[0].suggested_ecs_field is None
+    assert any("devname -> observer.name" in note for note in report.notes)
+
+
+def test_the_vocabulary_check_needs_a_vocabulary_that_was_actually_harvested():
+    """An index built from no pipeline files holds whatever list it was handed,
+    which is not evidence about what ECS contains."""
+    profiles = [FieldProfile(field_name="devname", dtype="string", cardinality=2, null_rate=0.0)]
+
+    report = ecs_gap.analyse(profiles, _index())
+
+    assert report.suggested_fields["devname"] == "observer.name"
+
+
 def test_index_cache_key_includes_the_indexer_version():
     """Without this, a cache written by an older build is reused forever: the
     corpus files have not changed, so a count-and-mtime key still matches."""
