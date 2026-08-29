@@ -7,7 +7,7 @@ an implementation at a maintained ingest pipeline beats hand-rolling one.
 **Resolution is by data stream fields, never by vendor name.** Phase 0 found
 that `cloudflare` and `cloudflare_logpush` are both "Cloudflare", and only the
 latter has a `firewall_event` data stream matching the sample's shape; a
-vendor-name lookup picks the wrong package. See docs/phase0-smoke-test.md §9.
+vendor-name lookup picks the wrong package. See docs/phase0-smoke-test.md Â§9.
 
 The index is built by reading the ingest pipelines in the clone: a `rename` from
 a source field to a target, plus the `set ... copy_from` chains that follow, is
@@ -85,7 +85,7 @@ _MIN_DISTINCTIVE_FIELDS = 2
 # Unambiguous ops fields, for samples no integration covers. Value-based entity
 # recognition cannot label these: a syslog severity is just a short string, and
 # a hostname like `vpn-gw-01` is not an FQDN.
-_NAME_TO_ECS: dict[str, str] = {
+NAME_TO_ECS: dict[str, str] = {
     "severity": "log.level",
     "level": "log.level",
     "loglevel": "log.level",
@@ -625,7 +625,7 @@ def _heuristic_ecs_field(profile: FieldProfile) -> str | None:
 
     entity = profile.entity_type
     if entity is None:
-        return _NAME_TO_ECS.get(lowered)
+        return NAME_TO_ECS.get(lowered)
 
     # Direction words only mean source/destination for network endpoints. For a
     # user, "target" is the account acted on, not a network peer, so
@@ -657,7 +657,7 @@ def _heuristic_ecs_field(profile: FieldProfile) -> str | None:
         return "file.path"
     if entity is EntityType.PROCESS_NAME:
         return "process.name"
-    return _NAME_TO_ECS.get(lowered)
+    return NAME_TO_ECS.get(lowered)
 
 
 def index_summary(index: IntegrationIndex | None) -> str:

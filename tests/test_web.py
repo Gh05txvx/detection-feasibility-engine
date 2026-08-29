@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -331,6 +332,55 @@ def test_a_rejected_card_names_the_field_that_is_missing(client):
     # And the sample's own events, so the gap is read against the data.
     assert "What the log actually looks like" in response.text
     assert "vpn-gw-01" in response.text
+
+
+def test_structure_page_offers_the_normalized_mapping_for_download(client):
+    job_id = _upload(client, CLOUDFLARE).headers["location"].rsplit("/", 1)[-1]
+
+    response = client.get(f"/jobs/{job_id}/structure")
+
+    assert "Download ingest pipeline" in response.text
+    assert "Download index template" in response.text
+    assert "PUT _ingest/pipeline/logs-cloudflare.firewall_events-ecs-normalization" in response.text
+    # The mapping is readable before it is downloaded, not only inside the file.
+    assert "cloudflare.client_request_path" in response.text
+
+
+def test_the_ecs_pipeline_downloads_as_a_deployable_json_body(client):
+    job_id = _upload(client, CLOUDFLARE).headers["location"].rsplit("/", 1)[-1]
+
+    response = client.get(f"/jobs/{job_id}/ecs-pipeline")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert "attachment" in response.headers["content-disposition"]
+    assert "logs-cloudflare.firewall_events-ecs-normalization.json" in (
+        response.headers["content-disposition"]
+    )
+
+    body = json.loads(response.text)
+    assert {"rename": {"field": "ClientIP", "target_field": "source.ip", "ignore_missing": True}} in (
+        body["processors"]
+    )
+
+
+def test_the_index_template_downloads_alongside_the_pipeline(client):
+    job_id = _upload(client, CLOUDFLARE).headers["location"].rsplit("/", 1)[-1]
+
+    body = json.loads(client.get(f"/jobs/{job_id}/ecs-template").text)
+
+    assert body["index_patterns"] == ["logs-cloudflare.firewall_events-*"]
+    assert body["template"]["settings"]["index.default_pipeline"].endswith("-ecs-normalization")
+    assert body["template"]["mappings"]["properties"]["source"]["properties"]["ip"] == {"type": "ip"}
+
+
+def test_the_mapping_download_needs_a_finished_run(client, workspace):
+    with db.connection() as conn:
+        job = job_store.create(conn, "pending.csv")
+
+    assert client.get(f"/jobs/{job.job_id}/ecs-pipeline").status_code == 409
+    assert client.get(f"/jobs/{job.job_id}/ecs-template").status_code == 409
+    assert client.get("/jobs/deadbeef/ecs-pipeline").status_code == 404
 
 
 def test_runbook_downloads_as_markdown(client):

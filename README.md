@@ -162,6 +162,7 @@ Useful flags:
 | `--top N` | How many candidates to show, backtest, and write runbooks for (default 10) |
 | `--log-rate N` | Production volume in events/day. Without it, alert volume is extrapolated from the sample's own time span, which is unreliable for short samples |
 | `--runbook-dir DIR` | Write a draft runbook per candidate |
+| `--ecs-dir DIR` | Write the ECS ingest pipeline and index template for the sample |
 | `--out FILE` | Write the rejection report markdown |
 | `--min-confidence N` | Confidence floor for candidates (default 0.4) |
 | `--json` | Machine-readable output instead of the report |
@@ -181,6 +182,15 @@ Starts the local server and opens a browser at `http://127.0.0.1:8765`. Four
 pages: upload, structure & fingerprint, matching results, history. Runs survive a
 restart. If the port is already in use, the launcher assumes an instance is
 already running and points the browser at it.
+
+**Structure & fingerprint** also exports the sample's fields already normalized,
+as two Elasticsearch API bodies ready to `PUT`: an **ingest pipeline** that renames
+every field to its ECS target, and an **index template** that types the result, so
+`source.ip` is indexed as an `ip` rather than as whatever dynamic mapping infers
+from CSV text. Fields ECS has no home for move under a vendor namespace instead of
+staying at the root. Neither file is sent anywhere — the download is the handover,
+and applying it stays a person's decision. `--ecs-dir` writes the same two files
+from the CLI.
 
 ### Internal taxonomy
 

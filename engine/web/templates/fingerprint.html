@@ -85,6 +85,89 @@
   {% endfor %}
 </div>
 
+<h2>Normalized fields, ready to deploy</h2>
+<div class="card">
+  <p style="margin-top:0">
+    Every field below, written as the two objects Elastic needs to hold it in ECS form: an
+    <strong>ingest pipeline</strong> that renames each field to its ECS target, and an
+    <strong>index template</strong> that types the result &mdash; so <code>source.ip</code> is
+    indexed as an <code>ip</code> and not as whatever dynamic mapping guesses from a CSV string.
+    Fields with no ECS equivalent are moved under <code>{{ export.namespace }}.*</code> rather
+    than left at the root, which is what the official integrations do with their leftovers.
+  </p>
+
+  <table class="kv">
+    <tr>
+      <th>Ingest pipeline</th>
+      <td><code>PUT _ingest/pipeline/{{ export.pipeline_id }}</code></td>
+    </tr>
+    <tr>
+      <th>Index template</th>
+      <td><code>PUT _index_template/{{ export.template_id }}</code></td>
+    </tr>
+    <tr>
+      <th>Writes to</th>
+      <td><code>{{ export.index_pattern }}</code> <span class="muted small">data stream</span></td>
+    </tr>
+    <tr>
+      <th>Fields</th>
+      <td>
+        {{ export.to_ecs }} to ECS
+        <span class="muted small">&middot;</span>
+        {{ export.to_namespace }} under <code>{{ export.namespace }}.*</code>
+        <span class="muted small">&middot;</span>
+        {{ export.mappings | length }} total
+      </td>
+    </tr>
+  </table>
+
+  <div class="actions">
+    <a class="button" href="/jobs/{{ job.job_id }}/ecs-pipeline">Download ingest pipeline</a>
+    <a class="button ghost" href="/jobs/{{ job.job_id }}/ecs-template">Download index template</a>
+  </div>
+
+  <details class="disclosure">
+    <summary>The full mapping &mdash; every field and where it lands</summary>
+    <div class="body">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Field in the sample</th><th>Indexed as</th><th>Type</th><th>Source of the mapping</th></tr>
+          </thead>
+          <tbody>
+          {% for mapping in export.mappings %}
+            <tr>
+              <td><code>{{ mapping.source_field }}</code></td>
+              <td>
+                <code>{{ mapping.target_field }}</code>
+                {% if mapping.kept_as %}<br><span class="muted small">original kept as <code>{{ mapping.kept_as }}</code></span>{% endif %}
+              </td>
+              <td class="muted small">{{ mapping.es_type }}</td>
+              <td>
+                {%- if mapping.origin.value == 'already-ecs' %}<span class="badge ok">already ECS</span>
+                {%- elif mapping.origin.value == 'official-integration' %}<span class="badge ok">integration</span>
+                {%- elif mapping.origin.value == 'event-time' %}<span class="badge info">event time</span>
+                {%- elif mapping.origin.value == 'heuristic' %}<span class="badge warn">heuristic</span>
+                {%- else %}<span class="badge neutral">no ECS field</span>{% endif %}
+                {% if mapping.note %}<br><span class="muted small">{{ mapping.note }}</span>{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </details>
+
+  {% for line in export.review %}
+  <p class="note">{{ line }}</p>
+  {% endfor %}
+  <p class="note">
+    Neither file is applied to anything from here &mdash; the download is the handover, and the
+    <code>PUT</code> stays a person's decision.
+  </p>
+</div>
+
 <div class="section-head">
   <h2>Fields <span class="muted small">(<span id="field-count">{{ fp.profiles | length }}</span> shown)</span></h2>
   <input class="filter" type="search" placeholder="Filter fields&hellip;"

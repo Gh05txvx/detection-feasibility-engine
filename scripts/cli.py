@@ -26,6 +26,7 @@ from engine.classification import rule_type_classifier  # noqa: E402
 from engine.hypothesis import report as rejection_report  # noqa: E402
 from engine.ingestion import parser as ingestion  # noqa: E402
 from engine.pipeline import PipelineResult  # noqa: E402
+from engine.profiling import ecs_export  # noqa: E402
 from engine.storage.taxonomy_store import TaxonomyEntry  # noqa: E402
 
 RULE = "-" * 78
@@ -67,6 +68,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     _report_fingerprint(result)
     _report_fields(result)
     _report_ecs_gap(result)
+    _report_ecs_export(result, args)
     _report_candidates(result, args.top)
     _report_runbooks(result, args)
     if markdown:
@@ -96,6 +98,10 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     arg_parser.add_argument("--out", default=None, help="write the rejection report markdown to this path")
     arg_parser.add_argument("--runbook-dir", default=None, help="write a runbook per shown candidate into this directory")
     arg_parser.add_argument("--no-runbooks", action="store_true", help="skip runbook generation")
+    arg_parser.add_argument(
+        "--ecs-dir", default=None,
+        help="write the ECS ingest pipeline and index template for this sample into this directory",
+    )
     arg_parser.add_argument(
         "--log-rate", type=float, default=None,
         help="expected production volume in events/day; without it, alert volume is extrapolated "
@@ -273,6 +279,39 @@ def _report_candidates(result: PipelineResult, top: int) -> None:
                 print(f"      backtest: not run   [tier: {forecast.confidence_tier.value}]")
             for line in textwrap.wrap(forecast.notes, width=98):
                 print(f"        {line}")
+
+
+def _report_ecs_export(result: PipelineResult, args: argparse.Namespace) -> None:
+    """The sample's fields normalized, as two bodies an implementer can apply.
+
+    Offered on the CLI as well as in the web UI because the real-sample runs that
+    validate this engine happen here, and the mapping is the part an implementer
+    most needs to disagree with early.
+    """
+    export = ecs_export.build(
+        result.fingerprint, result.ecs_gap, sample_name=Path(result.sample.path).name
+    )
+
+    print()
+    print(RULE)
+    print("ECS NORMALIZATION")
+    print(RULE)
+    print(f"  {export.to_ecs} field(s) to ECS, {export.to_namespace} under {export.namespace}.*")
+    print(f"  pipeline  PUT _ingest/pipeline/{export.pipeline_id}")
+    print(f"  template  PUT _index_template/{export.template_id}")
+
+    if args.ecs_dir:
+        for path in ecs_export.write(export, args.ecs_dir):
+            print(f"    written to {path}")
+    else:
+        print("  (pass --ecs-dir DIR to write both bodies)")
+
+    for line in export.review:
+        for index, wrapped in enumerate(textwrap.wrap(line, width=94)):
+            print(f"  {'!' if index == 0 else ' '} {wrapped}")
+
+    print()
+    print("  Both are drafts for review. Nothing here is applied to a cluster.")
 
 
 def _report_runbooks(result: PipelineResult, args: argparse.Namespace) -> None:

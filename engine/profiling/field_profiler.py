@@ -42,7 +42,7 @@ _MINUTE_RE = re.compile(r"\d{1,2}:\d{2}")
 # Sentinel, Excel and most non-ISO CSV exports write the date with separators and
 # no fixed component order: `16/07/2026 20:26:12.030`. The four-digit year is
 # required, so this cannot swallow an ISO date.
-_SLASH_DATE_RE = re.compile(
+SLASH_DATE_RE = re.compile(
     r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?:[T ](\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?))?$"
 )
 # A column that says it is local time and carries no offset. `TimeGenerated
@@ -402,7 +402,7 @@ def parse_timestamp(
     if not text:
         return None
 
-    slash = _SLASH_DATE_RE.match(text)
+    slash = SLASH_DATE_RE.match(text)
     if slash is not None:
         return _parse_slash_date(slash, date_order, allow_date_only=allow_date_only)
 
@@ -463,7 +463,7 @@ def _slash_date_order(values: Sequence[str]) -> str | None:
     seen = False
 
     for value in values:
-        match = _SLASH_DATE_RE.match(value.strip())
+        match = SLASH_DATE_RE.match(value.strip())
         if match is None:
             return None
         seen = True
@@ -529,7 +529,7 @@ def _granularity(example: str | None) -> str:
     if _MINUTE_RE.search(example):
         return "minute"
     stripped = example.strip()
-    if _DATE_ONLY_RE.match(stripped) or _SLASH_DATE_RE.match(stripped):
+    if _DATE_ONLY_RE.match(stripped) or SLASH_DATE_RE.match(stripped):
         return "day"
     return "unknown"
 
@@ -552,7 +552,7 @@ def _ordered_columns(columns: Iterable[Any], field_names: Sequence[str] | None) 
 # Placeholders log exporters write instead of leaving a cell empty. Deliberately
 # short: "unknown" and "none" are excluded because they are real values in some
 # sources (Cloudflare writes Source=unknown for events no WAF rule produced).
-_NULL_PLACEHOLDERS = frozenset({"-", "--", "n/a", "null", "(none)"})
+NULL_PLACEHOLDERS = frozenset({"-", "--", "n/a", "null", "(none)"})
 
 
 def _is_blank(value: Any) -> bool:
@@ -564,7 +564,7 @@ def _is_blank(value: Any) -> bool:
     if not isinstance(value, str):
         return False
     stripped = value.strip()
-    return not stripped or stripped.lower() in _NULL_PLACEHOLDERS
+    return not stripped or stripped.lower() in NULL_PLACEHOLDERS
 
 
 def _infer_dtype(field_name: str, values: Sequence[str]) -> str:
@@ -584,7 +584,7 @@ def _infer_dtype(field_name: str, values: Sequence[str]) -> str:
     # A separator-separated date is still a date, whether or not it can be read;
     # calling it a string would make the engine ask a client to add a timestamp
     # field they already send.
-    slash_dates = [_SLASH_DATE_RE.match(value.strip()) for value in values]
+    slash_dates = [SLASH_DATE_RE.match(value.strip()) for value in values]
     if all(match is not None for match in slash_dates):
         return "timestamp" if all(match.group(4) for match in slash_dates) else "date"
     if all(_INT_RE.match(value.strip()) for value in values):

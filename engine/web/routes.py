@@ -20,6 +20,7 @@ from fastapi.templating import Jinja2Templates
 from engine import pipeline
 from engine.hypothesis import report as rejection_report
 from engine.pipeline import PipelineResult
+from engine.profiling import ecs_export
 from engine.storage import db, job_store, taxonomy_store
 from engine.storage.db import REPO_ROOT
 from engine.storage.job_store import JobRecord, JobStatus, ResultType
@@ -133,7 +134,9 @@ async def structure_page(request: Request, job_id: str) -> Response:
     job = _job_or_404(job_id)
     result = _result_or_404(job)
     return templates.TemplateResponse(
-        request=request, name="fingerprint.html", context={"job": job, "result": result},
+        request=request,
+        name="fingerprint.html",
+        context={"job": job, "result": result, "export": _ecs_export(job, result)},
     )
 
 
@@ -162,6 +165,26 @@ async def results_page(request: Request, job_id: str) -> Response:
             "step_titles": rejection_report.STEP_TITLES,
         },
     )
+
+
+@router.get("/jobs/{job_id}/ecs-pipeline", response_class=PlainTextResponse)
+async def ecs_pipeline(job_id: str) -> Response:
+    """The sample's fields, normalized to ECS, as an ingest pipeline body.
+
+    Downloaded, reviewed, and applied by a person - `PUT _ingest/pipeline/<id>`
+    is theirs to run. BLUEPRINT 5.8 is why nothing here talks to a cluster.
+    """
+    job = _job_or_404(job_id)
+    export = _ecs_export(job, _result_or_404(job))
+    return _json(export.pipeline_json, export.pipeline_filename)
+
+
+@router.get("/jobs/{job_id}/ecs-template", response_class=PlainTextResponse)
+async def ecs_template(job_id: str) -> Response:
+    """The index template that types what the pipeline produces."""
+    job = _job_or_404(job_id)
+    export = _ecs_export(job, _result_or_404(job))
+    return _json(export.template_json, export.template_filename)
 
 
 @router.get("/jobs/{job_id}/runbook/{index}", response_class=PlainTextResponse)
@@ -326,11 +349,26 @@ def _unlink_within(path: Path, directory: Path) -> None:
         pass
 
 
+def _ecs_export(job: JobRecord, result: PipelineResult) -> ecs_export.EcsExport:
+    """Derived on each request rather than stored: it is a pure function of the
+    result, and a run persisted before this existed would otherwise have none."""
+    return ecs_export.build(result.fingerprint, result.ecs_gap, sample_name=job.filename)
+
+
 def _markdown(body: str, filename: str) -> Response:
     """A markdown file the browser saves rather than renders."""
     return PlainTextResponse(
         body,
         media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _json(body: str, filename: str) -> Response:
+    """A JSON file the browser saves rather than renders."""
+    return PlainTextResponse(
+        body,
+        media_type="application/json; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 

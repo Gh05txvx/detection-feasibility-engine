@@ -140,6 +140,61 @@ Built:
 
 | 1.11 | ~~**Make every seeded pattern run on Elastic's engine.**~~ **Done 2026-08-26.** All four regex entries rewritten; two became literal lists. Every entry's drafted query now runs as written. | eng | done |
 
+| 1.12 | ~~**Download the normalized fields as something deployable.**~~ **Done 2026-08-29.** The Structure page exports the whole field inventory as an ingest pipeline plus an index template, both ready to `PUT`. See below. | eng | done |
+
+### 1.12 — the field inventory, in the form implementation consumes
+
+BLUEPRINT 5.1 already says the field inventory is "input awal buat desain index
+template/pipeline yang akan dibangun di fase implementation". Until now it was
+only ever *displayed*: the Structure page showed, per field, whether it was ECS
+and what it should become, and the person doing the implementation retyped that
+into a pipeline by hand.
+
+`engine/profiling/ecs_export.py` writes it out instead. Two files off the
+Structure page, both plain Elasticsearch API bodies:
+
+- **`PUT _ingest/pipeline/logs-<dataset>-ecs-normalization`** — drops blank values
+  first (`source.ip` mapped as `ip` rejects `""`, and a W3C log writes `-` for
+  every gap, using the same placeholder list the profiler counts as empty), sets
+  `ecs.version` / `event.module` / `event.dataset`, parses event time, renames
+  each field to its ECS target, and moves the rest under the vendor namespace.
+- **`PUT _index_template/logs-<dataset>`** — a data stream template at priority
+  200 that types the result and wires `index.default_pipeline` to the above, so
+  `source.ip` is an `ip` and `source.port` a `long` instead of whatever dynamic
+  mapping infers from CSV text.
+
+Five decisions inside it were not obvious:
+
+- **Leftovers are namespaced, not left at the root.** `ClientRequestPath` becomes
+  `cloudflare.client_request_path`. A vendor name at the root is a name a later
+  ECS release can claim, and the index would then hold two meanings for it.
+- **Nothing that gets rewritten is destroyed.** The column read into `@timestamp`
+  is kept as `<namespace>.<name>`, always `keyword` — if the parse turns out to be
+  off by a timezone, the original text is the only thing that can fix it.
+- **`related.*` is appended, never renamed into.** ECS declares it an array
+  precisely so several fields can feed it; a rename would have the last IP column
+  silently overwrite the first.
+- **Event time is never guessed.** An ambiguous or contradictory date order
+  (item 1.6) produces *no* `date` processor and a named reason in
+  `_meta.review_before_deploy`. A local-time column gets `timezone: UTC` plus a
+  processor `description` saying to replace it. A pipeline that silently mis-dates
+  every event is worse than one that visibly lacks a step.
+- **A column of digits with a leading zero stays a `keyword`.** FortiGate's
+  `logid` is `0000000013`; as a `long` it becomes `13`, and the value a rule
+  matches on no longer exists anywhere in the index.
+
+One pre-existing quirk surfaced and is handled locally rather than by changing
+the gap analysis: `host` and `service` pass `_is_ecs_shaped` because their first
+segment is an ECS field set, but ECS has no bare `host` field — indexing a value
+directly under one collides with every `host.*` in the same index. The export
+resolves `host` to `host.name` via the same name table the heuristics use, and
+sends anything it cannot resolve to the vendor namespace with the reason
+attached. Worth deciding later whether `ecs_gap.analyse` should stop calling those
+compliant at all.
+
+Nothing is sent anywhere: both files are downloads, and the `PUT` stays a
+person's decision (BLUEPRINT 5.8).
+
 ### 1.11 — writing for the engine that actually runs the query
 
 The 1.10 guard reported the problem; this fixes it. Sigma is PCRE, Elastic is
@@ -463,8 +518,7 @@ Not oversights. `docs/BLUEPRINT.md` explicitly places these after the core is pr
 
 | # | Task | Owner | Size |
 |---|---|---|---|
-| 5.1 | **Upload retention.** ~~`data/uploads/` keeps every uploaded sample forever.~~ **Half done 2026-08-25 (see 1.9): samples are now prunable from the UI** — deleting a run deletes its uploaded sample. What is still open is *expiry*: nothing removes a sample the user never gets round to deleting. | eng | S |
-| 5.2 | **Corpus refresh cadence.** The blueprint asks for periodic refreshes of the Sigma and integrations clones. `scripts\setup.ps1` refreshes them, but nothing prompts anyone to run it. A staleness note on the results page would be enough. | eng | S |
+| 5.1 | **Upload retention.** ~~`data/uploads/` keeps every uploaded sample forever.~~ **Half done 2026-08-25 (see 1.9): samples are now prunable from the UI** — deleting a run deletes its uploaded sample. What is still open is *expiry*: nothing removes a sample the user never gets round to deleting. | eng | S || 5.2 | **Corpus refresh cadence.** The blueprint asks for periodic refreshes of the Sigma and integrations clones. `scripts\setup.ps1` refreshes them, but nothing prompts anyone to run it. A staleness note on the results page would be enough. | eng | S |
 | 5.3 | **Clear the verification runs** left in the local job history from UI testing. Cosmetic; they are visible in History. | eng | S |
 
 ---
