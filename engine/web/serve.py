@@ -37,7 +37,7 @@ def create_app():
 
     from engine.storage import db, job_store
     from engine.web import staleness
-    from engine.web.routes import STATIC_DIR, router
+    from engine.web.routes import RETENTION_DAYS, STATIC_DIR, expire_old_runs, router
 
     # Whatever the code looks like right now is what this process is running.
     staleness.watch.mark_started()
@@ -49,6 +49,15 @@ def create_app():
         orphaned = job_store.fail_orphaned(conn)
     if orphaned:
         print(f"Marked {len(orphaned)} unfinished run(s) as failed: their server is gone.")
+
+    # Client log data has a shelf life on this machine, and startup is the only
+    # moment a tool with no scheduler reliably gets.
+    expired = expire_old_runs()
+    if expired:
+        print(
+            f"Removed the sample and stored result of {expired} run(s) older than "
+            f"{RETENTION_DAYS} days."
+        )
 
     app = FastAPI(
         title="Detection Feasibility Engine",
@@ -76,7 +85,10 @@ async def _http_error_page(request, exc):
     hints = {
         404: "That job does not exist. It may have been run on a different machine.",
         409: "This run has not finished. Open it from History to watch its progress.",
-        410: "The stored result for this run was deleted from data/jobs.",
+        410: (
+            "The stored result for this run was deleted from data/jobs - either by hand, or "
+            "because the run aged past the retention window. Upload the sample again to re-run it."
+        ),
     }
     return templates.TemplateResponse(
         request=request,

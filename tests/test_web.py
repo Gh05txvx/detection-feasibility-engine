@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -483,6 +484,60 @@ def test_delete_will_not_follow_a_result_path_out_of_its_directory(client, works
     assert outsider.is_file(), "a file outside the job directory must survive"
     with db.connection() as conn:
         assert job_store.get(conn, job.job_id) is None
+
+
+def test_a_run_past_the_retention_window_loses_its_sample_and_result(client, workspace):
+    """The promise is that log data stays on this machine; the other half of it
+    is how long it stays here."""
+    job_id = _upload(client, CLOUDFLARE).headers["location"].rsplit("/", 1)[-1]
+    upload = next((workspace / "uploads").glob(f"{job_id}-*"))
+    result = workspace / "jobs" / f"{job_id}.json"
+    assert upload.is_file() and result.is_file()
+
+    _age(job_id, days=routes.RETENTION_DAYS + 1)
+    assert routes.expire_old_runs() == 1
+
+    assert not upload.exists()
+    assert not result.exists()
+    # The row stays: that a sample was assessed carries no confidentiality cost.
+    with db.connection() as conn:
+        assert job_store.get(conn, job_id) is not None
+    assert client.get(f"/jobs/{job_id}/structure").status_code == 410
+
+
+def test_a_run_inside_the_retention_window_is_untouched(client, workspace):
+    job_id = _upload(client, CLOUDFLARE).headers["location"].rsplit("/", 1)[-1]
+
+    _age(job_id, days=routes.RETENTION_DAYS - 1)
+
+    assert routes.expire_old_runs() == 0
+    assert (workspace / "jobs" / f"{job_id}.json").is_file()
+    assert client.get(f"/jobs/{job_id}/structure").status_code == 200
+
+
+def test_the_sweep_runs_when_the_server_starts(client, workspace, monkeypatch):
+    job_id = _upload(client, CLOUDFLARE).headers["location"].rsplit("/", 1)[-1]
+    _age(job_id, days=routes.RETENTION_DAYS + 1)
+
+    serve.create_app()
+
+    assert not (workspace / "jobs" / f"{job_id}.json").exists()
+
+
+def test_history_says_the_retention_window_out_loud(client):
+    _upload(client, CLOUDFLARE)
+
+    response = client.get("/history")
+
+    assert f"{routes.RETENTION_DAYS} days old" in response.text
+
+
+def _age(job_id: str, *, days: int) -> None:
+    """Backdate one run, so retention can be tested without waiting a month."""
+    created = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+    with db.connection() as conn:
+        conn.execute("UPDATE job_runs SET created_at = ? WHERE job_id = ?", (created, job_id))
+        conn.commit()
 
 
 def test_deleting_an_unknown_run_is_a_404(client):

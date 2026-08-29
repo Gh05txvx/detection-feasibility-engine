@@ -192,6 +192,13 @@ staying at the root. Neither file is sent anywhere — the download is the hando
 and applying it stays a person's decision. `--ecs-dir` writes the same two files
 from the CLI.
 
+**Retention.** Two files per run hold client log data: the uploaded sample, and
+the stored result, which embeds the sample events kept as evidence on every card.
+Both are removed automatically once a run is 30 days old (`RETENTION_DAYS` in
+`engine/web/routes.py`), swept at server start. The run stays listed in History —
+that a sample was assessed costs nothing to keep — but its result page no longer
+opens. Deleting a run from the UI removes the same files immediately.
+
 ### Internal taxonomy
 
 The half of matching that Sigma does not reach: proprietary apps, custom APIs,

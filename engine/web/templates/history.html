@@ -9,6 +9,10 @@
   Every sample assessed on this machine. Results survive a server restart; deleting a
   run also deletes the sample that was uploaded for it.
 </p>
+<p class="note">
+  A run's sample and stored result are removed automatically once it is
+  {{ retention_days }} days old. The run stays listed; its result page no longer opens.
+</p>
 {% endif %}
 
 {% set view = 'history' %}

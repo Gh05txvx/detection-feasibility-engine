@@ -11,6 +11,7 @@ rejection report, both of which say so.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Request, UploadFile
@@ -38,6 +39,15 @@ _CHUNK = 1024 * 1024
 
 RECENT_LIMIT = 5
 HISTORY_LIMIT = 100
+
+# How long a run's log data is kept on this machine.
+#
+# The tool's first rule is that raw log content never leaves this machine; the
+# other half of that promise is how long it stays on it. Two files hold client
+# log data per run - the uploaded sample, and the stored result, which embeds the
+# sample events kept as evidence on every card. Both go once a run is this old;
+# the row stays, so the history still says what was assessed and when.
+RETENTION_DAYS = 30
 
 # Job ids are `uuid4().hex[:12]`. Checked again before any path is built from one,
 # because a delete that takes an id from the URL and hands it to a glob is exactly
@@ -227,7 +237,11 @@ async def hypothesis(job_id: str, index: int) -> Response:
 async def history_page(request: Request) -> Response:
     with db.connection() as conn:
         jobs = job_store.list_recent(conn, limit=HISTORY_LIMIT)
-    return templates.TemplateResponse(request=request, name="history.html", context={"jobs": jobs})
+    return templates.TemplateResponse(
+        request=request,
+        name="history.html",
+        context={"jobs": jobs, "retention_days": RETENTION_DAYS},
+    )
 
 
 @router.delete("/jobs/{job_id}", response_class=HTMLResponse)
@@ -296,6 +310,23 @@ def run_job(job_id: str, sample_path: str) -> None:
 # -------------------------------------------------------------------- helpers
 
 
+def expire_old_runs(days: int = RETENTION_DAYS) -> int:
+    """Remove the log data left by runs older than `days`. Returns how many.
+
+    Called once when the app is built, next to `fail_orphaned`: a single-user
+    local tool has no scheduler, and startup is the one moment it reliably has.
+    A run that ages out while the server is up is caught the next time it starts.
+
+    The row survives on purpose. Deleting it would erase that the sample was ever
+    assessed, which is the part with no confidentiality cost; opening an expired
+    run gives the 410 the missing-result path already handles.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+    with db.connection() as conn:
+        expired = job_store.list_created_before(conn, cutoff)
+    return sum(1 for job in expired if _remove_job_files(job))
+
+
 def _job_or_404(job_id: str) -> JobRecord:
     with db.connection() as conn:
         job = job_store.get(conn, job_id)
@@ -313,8 +344,11 @@ def _result_or_404(job: JobRecord) -> PipelineResult:
     return PipelineResult.model_validate_json(path.read_text(encoding="utf-8"))
 
 
-def _remove_job_files(job: JobRecord) -> None:
+def _remove_job_files(job: JobRecord) -> bool:
     """Delete what one run left on disk: its uploaded sample and its result.
+
+    Returns whether anything was actually there to remove, which is what lets the
+    retention sweep report a number rather than a guess.
 
     Both paths are checked against the directory they are supposed to be under
     before anything is unlinked. `result_path` comes out of the database and the
@@ -326,27 +360,31 @@ def _remove_job_files(job: JobRecord) -> None:
     leave them stuck.
     """
     if not _JOB_ID_RE.match(job.job_id):
-        return
+        return False
 
+    removed = False
     for path in UPLOAD_DIR.glob(f"{job.job_id}-*"):
-        _unlink_within(path, UPLOAD_DIR)
+        removed |= _unlink_within(path, UPLOAD_DIR)
 
     if job.result_path:
-        _unlink_within(Path(job.result_path), JOB_DIR)
+        removed |= _unlink_within(Path(job.result_path), JOB_DIR)
+    return removed
 
 
-def _unlink_within(path: Path, directory: Path) -> None:
+def _unlink_within(path: Path, directory: Path) -> bool:
     """Unlink `path` only if it really resolves to a file inside `directory`."""
     try:
         resolved = path.resolve()
         if not resolved.is_relative_to(directory.resolve()):
-            return
+            return False
         if resolved.is_file():
             resolved.unlink()
+            return True
     except OSError:
         # Locked by a virus scanner, or on a volume that vanished. The row still
         # goes; a file that could not be removed is not a reason to keep it.
         pass
+    return False
 
 
 def _ecs_export(job: JobRecord, result: PipelineResult) -> ecs_export.EcsExport:

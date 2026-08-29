@@ -151,6 +151,18 @@ def list_recent(conn: sqlite3.Connection, limit: int = 50) -> list[JobRecord]:
     return [JobRecord(**dict(row)) for row in rows]
 
 
+def list_created_before(conn: sqlite3.Connection, cutoff: str) -> list[JobRecord]:
+    """Runs started before `cutoff`, an ISO-8601 UTC timestamp, oldest first.
+
+    Compared as strings, which is exact here because `_utcnow` writes every
+    timestamp at the same precision and the same `+00:00` offset.
+    """
+    rows = conn.execute(
+        f"SELECT {_COLUMNS} FROM job_runs WHERE created_at < ? ORDER BY created_at", (cutoff,)
+    ).fetchall()
+    return [JobRecord(**dict(row)) for row in rows]
+
+
 def delete(conn: sqlite3.Connection, job_id: str) -> bool:
     with transaction(conn):
         cursor = conn.execute("DELETE FROM job_runs WHERE job_id = ?", (job_id,))

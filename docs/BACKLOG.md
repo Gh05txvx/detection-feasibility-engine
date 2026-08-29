@@ -588,7 +588,36 @@ Not oversights. `docs/BLUEPRINT.md` explicitly places these after the core is pr
 
 | # | Task | Owner | Size |
 |---|---|---|---|
-| 5.1 | **Upload retention.** ~~`data/uploads/` keeps every uploaded sample forever.~~ **Half done 2026-08-25 (see 1.9): samples are now prunable from the UI** — deleting a run deletes its uploaded sample. What is still open is *expiry*: nothing removes a sample the user never gets round to deleting. | eng | S || 5.2 | **Corpus refresh cadence.** The blueprint asks for periodic refreshes of the Sigma and integrations clones. `scripts\setup.ps1` refreshes them, but nothing prompts anyone to run it. A staleness note on the results page would be enough. | eng | S |
+| 5.1 | ~~**Upload retention.**~~ **Done 2026-08-30.** Expiry now runs at server start. Also corrects what this item was counting: it is not only uploads. See below. | eng | done |
+
+### 5.1 — it was never only the uploads
+
+This sat under *hygiene*, which undersold it. The tool's first rule is that raw
+log content never leaves this machine; the matching question is how long it stays
+on it, and that belongs next to the rule, not next to the cosmetics.
+
+Correcting the item itself: **two files per run hold client log data, not one.**
+`data/uploads/<id>-<name>` is the obvious one. The other is
+`data/jobs/<id>.json` — it embeds the `EventExample` rows kept as evidence on
+every candidate card and every hypothesis, and those carry real field values out
+of the sample. Deleting the upload by hand, which is what 1.9 made possible, left
+that behind. Nothing recorded that until now.
+
+`routes.expire_old_runs()` removes both once a run is `RETENTION_DAYS` (30) old,
+swept from `serve.create_app()` — a single-user local tool has no scheduler, and
+startup is the one moment it reliably gets. A run that ages out mid-session is
+caught the next time the server starts.
+
+The row stays. That a sample was assessed, when, and what the outcome was carries
+no confidentiality cost, and deleting it would erase the history the page exists
+for. Opening an expired run gives the 410 the missing-result path already
+handled; its hint now names retention as a likely cause, and the History page
+states the window rather than leaving people to discover it.
+
+Still open, and a judgement rather than an oversight: 30 days is a guess. It
+should be whatever the engagement's own data-handling terms say, and it is a
+single constant so that it can be.
+| 5.2 | **Corpus refresh cadence.** The blueprint asks for periodic refreshes of the Sigma and integrations clones. `scripts\setup.ps1` refreshes them, but nothing prompts anyone to run it. A staleness note on the results page would be enough. | eng | S |
 | 5.3 | **Clear the verification runs** left in the local job history from UI testing. Cosmetic; they are visible in History. | eng | S |
 
 ---
